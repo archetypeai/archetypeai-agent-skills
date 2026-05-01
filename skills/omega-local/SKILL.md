@@ -290,6 +290,46 @@ candidates = {
 
 Cross-cutting observation: on hard datasets, **RF balanced + low threshold** consistently dominates F2. KNN distance is a strong default for clean datasets where threshold ≈ 0.5 already works.
 
+## Visualizing temporal structure: trajectory plots
+
+The default visualization for embeddings is t-SNE/UMAP colored by **class** (fault vs normal) or a **categorical metadata column** (month, day-of-week). That answers "do classes separate?" but hides temporal dynamics.
+
+A **trajectory plot** colors the same 2D scatter by **chronological position** (viridis: purple for earliest, yellow for latest). It surfaces patterns that categorical coloring can't:
+
+| Pattern | What it looks like | Implication |
+|---|---|---|
+| Closed loop | Year cycles back, December points sit near January's | Steady-state seasonal behavior; year is repeatable |
+| One-way drift | Trajectory goes purple → yellow without returning | Capacity additions, sensor calibration drift, system wear |
+| Distinct phases | Sharp color boundaries between regions of the scatter | Phase transitions (normal → degrading → fault) |
+| Tangled center, smooth edges | Most points cluster, a few sweep around the perimeter | Anomalies are temporal outliers, not just point outliers |
+
+Pattern adapted from [`archetypeai/omega_tools/embedding_tools/plot_utils.py`](https://github.com/archetypeai/omega_tools) (matplotlib `plot_trajectory`). For Plotly:
+
+```python
+def plot_trajectory(df_reduced, sort_by=None, connect=False, point_size=6):
+    """Color-by-time scatter on the output of a 2D reduction."""
+    import plotly.graph_objects as go
+    if sort_by is None:
+        sort_by = 'timestamp' if 'timestamp' in df_reduced.columns else 'read_index'
+    df = df_reduced.sort_values(sort_by).reset_index(drop=True)
+    df['t_step'] = range(len(df))
+    fig = go.Figure()
+    if connect:
+        fig.add_trace(go.Scatter(x=df['dim1'], y=df['dim2'], mode='lines',
+                                  line=dict(color='lightgray', width=0.5), showlegend=False, hoverinfo='skip'))
+    fig.add_trace(go.Scatter(
+        x=df['dim1'], y=df['dim2'], mode='markers',
+        marker=dict(color=df['t_step'], colorscale='Viridis', size=point_size,
+                    showscale=True, colorbar=dict(title='time step')),
+        showlegend=False,
+    ))
+    return fig
+```
+
+**Per-block trajectories**: when the dataset has multiple independent recordings (jobs, sessions, runs), facet the trajectory plot — one per block, each viridis-colored from start to end of that block. Reveals whether **each individual run** evolves consistently. Inside a `for` loop, you have to call `display(fig)` explicitly — Jupyter only auto-displays the *last* expression of a cell, not loop returns.
+
+**`connect=True` caveat**: a polyline through consecutive points helps for ≤200 points (you can see the path); for thousands of points it becomes a tangled mess that obscures the scatter. Default to `False` for whole-year datasets, `True` for short recordings.
+
 ## Common Pitfalls
 
 ### 1. Constant-zero sensor columns
