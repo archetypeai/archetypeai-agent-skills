@@ -33,7 +33,7 @@ Run the Omega 1.3 encoder directly in PyTorch from a checkpoint file. This is th
 | Thing | Notes |
 |-------|-------|
 | Omega checkpoint | `.pt` file, e.g. `omega1_3_encoder_forecast_decoder.pt`. Place under `omega_core/weights/` (or wherever convenient). |
-| `omega_core/` SDK | Vendored package containing `core/`, `embedding_lens.py`, `model_loader.py`, `utils.py`. The contents of `omega_core/core/` are exact copies from Archetype's `atai_core` and should not be edited locally. |
+| `omega_core/` SDK | Vendored package containing `core/`, `embedding_lens.py`, `model_loader.py`, `utils.py`. Treat `omega_core/core/` as upstream code — do not edit it locally; sync changes through the source of truth instead. |
 | Python 3.11 or 3.12 | 3.9 is EOL and several deps (numpy 2.x, pandas 3.x) require 3.10+. |
 | Deps | `torch>=2.0`, `numpy`, `pandas`, `scikit-learn`, `einops`, `umap-learn`, `plotly` |
 
@@ -232,9 +232,9 @@ If you call `lens.embed(np.random.randn(2, 1024))` (2 channels), you get `ValueE
 
 Short windows are **left-padded**, not right-padded. The valid points are the *end* of the sequence. If you implement custom padding, match this convention or your embeddings won't be comparable to the rest of the pipeline.
 
-## Reference Implementation
+## Suggested Module Layout
 
-The [aveva](https://github.com/NathanNam/) project (private) wraps these patterns into composable classes:
+A clean way to organize a project around these patterns is one class per file, each owning a single stage of the pipeline:
 
 | Class | Responsibility |
 |-------|----------------|
@@ -245,7 +245,7 @@ The [aveva](https://github.com/NathanNam/) project (private) wraps these pattern
 | `MachineState` | Unified KNN (classify) / Isolation Forest (anomaly) with consistent prediction DataFrame |
 | `Visualizer` | PCA/t-SNE/UMAP scatter, raw signals, predictions-over-time with label-shaded background |
 
-Reading those classes (~1000 lines total) is the fastest way to see the full pattern in production form.
+Each class consumes the output of the previous one. The whole pipeline fits in ~1000 lines and is easy to swap individual stages on (e.g. trying a different windowing strategy without touching the classifier).
 
 ## Comparing Local vs Newton Machine State Lens
 
