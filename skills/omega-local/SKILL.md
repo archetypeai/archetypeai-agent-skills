@@ -132,6 +132,44 @@ Two requirements:
 - Same `sensor_order` at train, test, and inference time (or your KNN distances will be meaningless).
 - Every window must contain every sensor — drop windows where a sensor is missing.
 
+## Preflight: data-quality checks before embedding
+
+The Omega encoder works best on **monotonically increasing timestamps with a roughly constant sampling rate**. Deviations don't always break the pipeline, but they're worth flagging early — and the same checks catch unrelated data issues that *do* break things downstream.
+
+Pattern adapted from [`archetypeai/omega-1-4-preflight`](https://github.com/archetypeai/omega-1-4-preflight) (that repo targets the cloud `machine-state-job-pipeline` for `omega_1_4_base`; the static checks transfer cleanly to local 1.3 inference). Run once after loading, before any transformations:
+
+| Check | What it catches | Severity |
+|---|---|---|
+| `schema` | Time column missing, non-numeric features | FAIL |
+| `timestamp` | Non-monotonic, duplicates, gaps where `max(Δt) > N × median(Δt)` | FAIL/WARN |
+| `missing_values` | NaN columns (worst-offender first) | WARN |
+| `constant_columns` | Zero-variance sensors that should be dropped | WARN |
+| `feature_scale` | Range gap > N decades — flags need for StandardScaler | WARN |
+| `class_balance` | Severe (>85%) or moderate (>70%) imbalance, with majority baseline | WARN |
+| `window_vs_sampling` | Translates `window_size × median(Δt)` into human time so you can sanity-check it covers a typical fault duration | INFO |
+
+Sketch:
+
+```python
+def preflight(df, time_col, sensor_cols=None, label_col=None, block_col=None,
+              window_size=None, gap_threshold_x=5.0, scale_decade_warn=3.0):
+    """Returns list of (level, name, message). Use block_col for per-block
+    timestamp checks (e.g. when each job is a separate recording)."""
+    results = []
+
+    # 1. schema (time col, numeric sensors)
+    # 2. timestamp per block: monotonic, unique, max(Δt)/median(Δt) ≤ gap_threshold_x
+    # 3. missing values per column
+    # 4. constant columns: std < 1e-12
+    # 5. feature-scale heterogeneity: log10(range) span > scale_decade_warn
+    # 6. class balance with majority baseline
+    # 7. window_size × median(Δt) → human-readable duration
+
+    return results
+```
+
+Run with `block_col='job_id'` (or whatever splits your recordings) when the dataset has multiple independent blocks — windowing must not cross block boundaries, and per-block timestamp checks catch issues a global check would hide.
+
 ## Pipeline Skeleton
 
 ```python
@@ -186,7 +224,54 @@ clf.fit(X_train, y_train)
 print("test acc:", clf.score(X_test, y_test))
 ```
 
-For anomaly detection, swap step 7 for `IsolationForest(contamination="auto").fit(X_train)` and don't pass `y_train` — labels are only used for evaluation.
+For anomaly detection, swap step 7 for `IsolationForest(contamination="auto").fit(X_train)` and don't pass `y_train` — labels are only used for evaluation. **Caveat**: Isolation Forest assumes anomalies are *rare and structurally different*. If your "anomaly" class is 30%+ of data and shares structure with normal (e.g. same machine, different operating mode), IF will collapse to predicting "all normal." That's a classification problem, not an anomaly-detection one — stick with the supervised baseline.
+
+## Beyond a baseline: threshold tuning + model selection
+
+The default KNN baseline often underperforms on the rare/expensive class — even when overall accuracy looks fine. Two leverage points before reaching for a different architecture:
+
+### 1. Decision-threshold tuning
+
+sklearn defaults to threshold 0.5 on `prob_1`. For binary fault detection, a lower threshold catches more faults at the cost of more false alarms. Sweep and pick:
+
+```python
+prob_fault = clf.predict_proba(X_test)[:, 1]
+for t in np.linspace(0.05, 0.95, 19):
+    y_pred = (prob_fault >= t).astype(int)
+    # compute precision, recall, F-beta — pick the t that fits your cost ratio
+```
+
+### 2. F-beta scoring
+
+When recall on the rare class matters more than precision, score with F-beta instead of F1:
+
+```python
+def fbeta(precision, recall, beta=2.0):
+    if precision + recall == 0: return 0.0
+    b2 = beta * beta
+    return (1 + b2) * precision * recall / (b2 * precision + recall)
+```
+
+`beta=1` is F1 (balanced). `beta=2` weights recall 2× as much as precision — appropriate when missing a fault is much more costly than a false alarm. `beta=4` heavily favors recall; `beta=0.5` favors precision.
+
+### 3. Multi-model auto-select
+
+Sweep across model variants, pick the F-beta-optimal threshold per model, then pick the F-beta-best overall:
+
+```python
+candidates = {
+    'KNN distance':    KNeighborsClassifier(n_neighbors=5, metric='manhattan', weights='distance'),
+    'KNN uniform':     KNeighborsClassifier(n_neighbors=5, metric='manhattan', weights='uniform'),
+    'LogReg balanced': LogisticRegression(class_weight='balanced', max_iter=2000),
+    'RF balanced':     RandomForestClassifier(class_weight='balanced', n_estimators=200,
+                                              random_state=42, n_jobs=-1),
+}
+# For each: fit, sweep thresholds, record F-beta-best. Pick winner across models.
+```
+
+`class_weight='balanced'` (LogReg, RF) automatically reweights losses inversely to class frequency. KNN doesn't support `class_weight` natively — `weights='uniform'` vs `'distance'` is the closest knob, and threshold sweeping does more for KNN than weight choice.
+
+Cross-cutting observation: on hard datasets, **RF balanced + low threshold** consistently dominates F2. KNN distance is a strong default for clean datasets where threshold ≈ 0.5 already works.
 
 ## Common Pitfalls
 
@@ -231,6 +316,17 @@ If you call `lens.embed(np.random.randn(2, 1024))` (2 channels), you get `ValueE
 ### 7. Padding direction
 
 Short windows are **left-padded**, not right-padded. The valid points are the *end* of the sequence. If you implement custom padding, match this convention or your embeddings won't be comparable to the rest of the pipeline.
+
+### 8. OOT split breaks on single-transition datasets
+
+Out-of-time (chronological) splitting assumes both classes appear throughout time. When the fault region is one contiguous block (e.g. rows 0–93 are fault, 94–246 are normal), a 70/30 split puts all of one class in train and all of the other in test:
+
+- `y_test` has only one unique value — precision/recall on the missing class are undefined.
+- Macro F1 may report 1.0 if the model trivially predicts the only present class — looks great but is uninformative.
+
+The deceptive symptom: the pipeline runs without error and reports a strong-looking score. Always check `np.unique(y_train, return_counts=True)` and `np.unique(y_test, return_counts=True)` after splitting.
+
+**Fix**: use `mode='random'` (with `random_state` for reproducibility) when the dataset has a single fault episode. OOT remains correct for multi-block datasets where each block is internally mixed (e.g. one job containing both fault and normal samples) — the issue is *temporal class structure*, not OOT vs random in general.
 
 ## Suggested Module Layout
 
