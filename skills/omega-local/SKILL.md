@@ -132,6 +132,23 @@ Two requirements:
 - Same `sensor_order` at train, test, and inference time (or your KNN distances will be meaningless).
 - Every window must contain every sensor — drop windows where a sensor is missing.
 
+## Wide vs long format: getting your data into the right shape
+
+Most of the patterns above assume **wide format** — one row per timestamp, one column per sensor. If your data arrives in **long format** (one row per `(entity, timestamp)` reading — common for meter readings, multi-tenant time-series databases, etc.), pivot first:
+
+```python
+# Long → wide: each meter/sensor becomes a column
+df = df_long.pivot(index='timestamp', columns='meter_id', values='reading')
+df = df.reset_index().sort_values('timestamp').reset_index(drop=True)
+```
+
+Three things to watch for:
+1. **Pivoting introduces NaN** where some entities lack data at certain timestamps. Drop entities with high NaN coverage (>5–10%) before windowing — every window must contain every sensor or the joint-state pivot fails.
+2. **The pipeline treats each entity as a sensor.** Joint state = `n_entities × 768`. For a building with 21 sub-meters, that's 16,128 dims — fine for IsolationForest/KNN, slow for RandomForest with `n_estimators=200+`.
+3. **Loading directly from compressed CSVs**: `pd.read_csv('archive.zip', usecols=['needed', 'cols'])` works when the zip contains exactly one CSV. `usecols` filters at the parser level — much faster than dropping columns post-load on a multi-GB file. Add `low_memory=False` to suppress the mixed-dtype warning.
+
+If your data is **per-block** (e.g. multiple jobs/recordings concatenated, where each block is a separate continuous time series), iterate over blocks and offset `read_index` so the joint-state pivot's read_index is globally unique. See `gripper_anomaly.ipynb` for the full pattern.
+
 ## Preflight: data-quality checks before embedding
 
 The Omega encoder works best on **monotonically increasing timestamps with a roughly constant sampling rate**. Deviations don't always break the pipeline, but they're worth flagging early — and the same checks catch unrelated data issues that *do* break things downstream.
@@ -327,6 +344,30 @@ Out-of-time (chronological) splitting assumes both classes appear throughout tim
 The deceptive symptom: the pipeline runs without error and reports a strong-looking score. Always check `np.unique(y_train, return_counts=True)` and `np.unique(y_test, return_counts=True)` after splitting.
 
 **Fix**: use `mode='random'` (with `random_state` for reproducibility) when the dataset has a single fault episode. OOT remains correct for multi-block datasets where each block is internally mixed (e.g. one job containing both fault and normal samples) — the issue is *temporal class structure*, not OOT vs random in general.
+
+### 9. Tz-aware timestamps lose their tz through `.values`
+
+If your source data has tz-aware timestamps (`+05:30` from ISO 8601, or UTC from `pd.to_datetime(..., utc=True)`), and you build a metadata DataFrame using `.values` on a tz-aware Series:
+
+```python
+metadata['timestamp'] = some_series.values   # ⚠ silently strips tz
+```
+
+`numpy datetime64` has no timezone support, so `.values` drops the tz. Downstream tz-aware comparisons then fail with:
+
+```
+TypeError: Cannot compare tz-naive and tz-aware datetime-like objects
+```
+
+The symptom is deceptive: the embedding flow works, the anomaly detection runs, then a "zoom into the raw signal around this anomaly" cell crashes because it does `df['Timestamp'] >= some_metadata_timestamp` and the two sides have incompatible tz-awareness.
+
+**Fix**: keep timestamps as a pandas Series. Use `.reset_index(drop=True)` for positional alignment with sibling array columns instead of `.values` for stripping:
+
+```python
+metadata['timestamp'] = some_series.reset_index(drop=True)
+```
+
+`pd.DataFrame` accepts mixed Series/array values when their lengths match. Or, convert both sides to a consistent tz at the comparison point.
 
 ## Suggested Module Layout
 
