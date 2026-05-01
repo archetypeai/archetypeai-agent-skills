@@ -1,6 +1,6 @@
 # Archetype AI Agent Skills
 
-Agent skills for building applications with [Archetype AI's Newton](https://www.archetypeai.dev/) — a real-time sensor intelligence platform that understands physical world data through foundation models.
+Agent skills for building applications with [Archetype AI's Newton](https://www.archetypeai.io/) — a real-time sensor intelligence platform that understands physical world data through foundation models.
 
 Inspired by [mongodb/agent-skills](https://github.com/mongodb/agent-skills).
 

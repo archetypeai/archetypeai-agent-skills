@@ -45,7 +45,7 @@ Authorization: Bearer ${ATAI_API_KEY}
 
 ### Setup Steps
 
-1. **Obtain API key** from [Archetype AI](https://www.archetypeai.dev/)
+1. **Obtain API key** from [Archetype AI](https://www.archetypeai.io/)
 
 2. **Set environment variable:**
    ```bash
