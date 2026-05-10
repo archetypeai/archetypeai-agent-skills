@@ -195,6 +195,18 @@ The mono font (`font-mono`) is used deliberately on specific UI elements — nev
 - Focus: `ring-ring/50`, 3px ring
 - Invalid: `aria-invalid:border-destructive`, `aria-invalid:ring-destructive/20`
 
+### PlaybackBar (replay / time-scrub control)
+
+Used in any demo that replays a time-indexed dataset — `newton-swat-demo` (10× SWaT replay), `newton-wifi-demo` (per-window walkthrough), `newton-obd2-demo` (1×–20× session playback). A horizontal strip immediately under the Menubar (`border-b px-4 py-2`), with these elements left-to-right:
+
+- **Play / pause icon button** — `Button variant="outline" size="icon"`, swaps a `Play` and `Pause` Lucide icon
+- **Reset icon button** — same `outline icon`, `RotateCcw` Lucide icon
+- **Time readout** — mono, tabular nums, e.g. `52:40 / 52:40`. `text-muted-foreground` with the separator slash at `opacity-50`.
+- **Scrubber** — `<input type="range">` (`flex-1`) styled with a `border`-colored track and a `bg-foreground` circular thumb ringed by 2px `bg-background`
+- **Speed selector** — segmented group of buttons inside a 1px `border` container, mono uppercase labels (`1× 2× 3× 5× 10× 20×`), active state uses `bg-accent` + `text-foreground`, rest uses `text-muted-foreground`
+
+Separating the bar from the panel grid (own row, own border) keeps temporal control out of the data area and makes it obvious it acts globally on every panel.
+
 ### Icons (Lucide)
 - Default stroke width: 1 (`--atai-icon-stroke-default`)
 - Interactive: 1.25 (`--atai-icon-stroke-interactive`)
@@ -217,6 +229,17 @@ The mono font (`font-mono`) is used deliberately on specific UI elements — nev
 - Grid: `grid-rows-[auto_1fr]` — fixed menubar + flexible content area
 - Content: `grid grid-cols-2 grid-rows-2 gap-4 p-4` — 2×2 panel grid
 - Each panel: `max-h-full` with internal scroll via `ScrollArea`
+
+### Split-pane Layout (Sensor / Analysis Pattern)
+
+When the demo has a clear "raw input | model interpretation" duality — timeline of sensor values on one side, model output on the other — use a horizontal split instead of the 2×2 grid:
+
+- Outer grid: `grid-rows-[auto_auto_1fr]` — Menubar / PlaybackBar / content
+- Content grid: `grid-cols-[240px_1fr_1fr] gap-3 p-3` — sidebar (session list) + left pane (raw signals) + right pane (analysis)
+- Each pane handles its own internal scroll; the page never scrolls
+- Both data panes are visually weighted equally (`1fr` each) — neither side is "subordinate"
+
+`newton-obd2-demo` uses this for raw OBD-II playback on the left and the Omega embedding trajectory on the right, time-synced through a shared scrubber. The pattern generalizes to any "compare what the sensors saw against what the model concluded" case.
 
 ### Menubar
 - Fixed header: `border-b px-4 py-2`
@@ -322,6 +345,9 @@ Archetype AI interfaces are primarily designed for **desktop monitoring environm
 - **ScrollArea in cards**: BackgroundCard's `CardContent` needs `min-h-0 flex-1` for `ScrollArea` to properly constrain and scroll inside flex containers.
 - **Status inference**: When classifying Newton's text responses (e.g., traffic normal vs congestion), check for negation patterns ("no visible incidents") before keyword matching to avoid false positives.
 - **Camera watermarks**: ALERTCalifornia cameras have a "UC San Diego" watermark. Newton reads it and assumes location — explicitly tell Newton to ignore watermarks in the instruction prompt.
+- **Plotly traces**: set `paper_bgcolor: "transparent"` and `plot_bgcolor: "transparent"` so the surrounding `bg-card` is visible — never hardcode a chart background color. Axis font: `family: "PP Neue Montreal Mono, monospace"`. Grid lines in dark mode: `gridcolor: "rgba(255,255,255,0.08)"` (matches the 10% white border convention). For a single primary line series, use Cool Purple `oklch(0.66 0.177 299.333)`; for time-revealed scatters (UMAP/t-SNE/PCA over a session timeline), `colorscale: "Viridis"` with the colorbar labeled in mono.
+- **Plotly `scatter3d` doesn't honor per-marker opacity arrays** (works in 2D `scatter`, silently ignored in 3D). To reveal points progressively in 3D, slice the `x`/`y`/`z` arrays each frame (`coords.slice(0, activeIdx + 1)`) instead of toggling opacity.
+- **Plotly with React + Vite**: skip `react-plotly.js@2.x` — its CommonJS factory breaks under Vite + React 19 with `createPlotlyComponent is not a function`. Call `Plotly.react(ref.current, traces, layout)` directly inside a `useEffect` and use a `ResizeObserver` for autosizing.
 
 ### Iteration Guide
 1. Start with the dark canvas — `oklch(0.141 0.005 285.823)` background
@@ -340,6 +366,9 @@ Archetype AI interfaces are primarily designed for **desktop monitoring environm
 |------|-----------|------------|------|
 | **Traffic Monitor** | HLS video stream (Caltrans CCTV) | Lens session + `model.query` (vision) | [archetypeai/newton-traffic-demo](https://github.com/archetypeai/newton-traffic-demo) |
 | **Wildfire Watch** | JPEG snapshots (ALERTCalifornia 1,200+ cameras) | Lens session + `model.query` (vision) | [archetypeai/newton-wildfire-demo](https://github.com/archetypeai/newton-wildfire-demo) |
-| **Seismic Monitor** | USGS earthquake catalog (structured text) | Direct query `/v0.5/query` (reasoning) | [archetypeai/newton-earthquake-demo](https://github.com/archetypeai/newton-earthquake-demo) |
+| **Earthquake Monitor** | USGS earthquake catalog (structured text) | Direct query `/v0.5/query` (reasoning) | [archetypeai/newton-earthquake-demo](https://github.com/archetypeai/newton-earthquake-demo) |
 | **Grid Monitor** | CAISO supply/demand CSVs (5-min intervals) | Direct query `/v0.5/query` (reasoning) | [archetypeai/newton-grid-demo](https://github.com/archetypeai/newton-grid-demo) |
 | **Drilling Monitor** | Volve oil field sensor data (14 wells, North Sea) | Machine State Lens (SSE streaming) | [archetypeai/newton-drilling-demo](https://github.com/archetypeai/newton-drilling-demo) |
+| **WiFi Occupancy** | GHOST-IoT smart-home capture (10 days, 9 WiFi clients, anonymized) | Direct query `/v0.5/query` (reasoning) | [archetypeai/newton-wifi-demo](https://github.com/archetypeai/newton-wifi-demo) |
+| **Water Treatment Plant Monitor** | SWaT dataset (iTrust/SUTD) — 6-stage plant, 7 days normal + 4 days of 36 cyber-physical attacks | Machine State Lens (6 parallel SSE sessions) + `/query` (operator suggestions) | [archetypeai/newton-swat-demo](https://github.com/archetypeai/newton-swat-demo) |
+| **OBD-II Embedding Viewer** | OBD-II logs from a 2020 Lexus RX 450hL (2 sessions × ~50 min, 25 sensors) | Omega 1.3 encoder (local checkpoint, precomputed embeddings) | [archetypeai/newton-obd2-demo](https://github.com/archetypeai/newton-obd2-demo) |
