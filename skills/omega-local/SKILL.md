@@ -51,7 +51,7 @@ from omega_core.embedding_lens import EmbeddingLens
 
 lens = EmbeddingLens(
     checkpoint_path="omega_core/weights/omega1_3_encoder_forecast_decoder.pt",
-    device=None,            # auto-detects cuda/mps/cpu
+    device=None,            # see device note below
     normalize_input=True,   # see "Normalization choices" below
 )
 
@@ -59,6 +59,8 @@ embedding = lens.embed(timeseries)   # shape (1, 1024) → (768,)
 ```
 
 `get_encoder_from_checkpoint(path)` (in `omega_core/model_loader.py`) is the lower-level loader if you need direct access to the `nn.Module`.
+
+**Device note**: as shipped, `EmbeddingLens.__init__` only autodetects CUDA vs CPU — it doesn't pick MPS. On Apple Silicon, pass it explicitly: `EmbeddingLens(..., device="mps")`. Or write a tiny wrapper that does `cuda → mps → cpu` autodetect (recommended if your encoder might run on multiple machines).
 
 ## Single-Channel Constraint
 
@@ -74,20 +76,54 @@ Trying to feed `(B, n_sensors, T)` raises `ValueError: Model only supports singl
 
 For `T = window_size` rows of a single sensor:
 
-- `window_size == 1024` → fast path, encoder runs as-is.
+- `window_size == 1024` → fast path, `lens.embed(window)` runs as-is.
 - `window_size < 1024` → **left-pad** with zeros to 1024 and pass a `timepoint_mask` (1.0 for valid points, 0.0 for padding). Padding goes on the **left** (start of the sequence), valid points are the most recent. Instance normalization (when enabled) is computed only over valid points.
 - `window_size > 1024` → not supported. Resample, downsample, or split.
 
-The reference loop (with overlap):
+⚠️ **`EmbeddingLens.embed()` does not accept a mask** — it builds an all-ones mask internally and the encoder will raise `ValueError: Make sure the time series length matches what the model expects. Expected 1024 but got <N>` for any other length. For short windows, bypass `lens.embed()` and call the encoder directly:
+
+```python
+import torch
+import numpy as np
+
+@torch.no_grad()
+def embed_short(lens, windows, normalize=True):
+    """Embed variable-length 1D windows by left-padding to 1024 + masking padding.
+
+    `windows` is an iterable of 1D arrays, each of length <= 1024.
+    Returns a (B, 768) numpy array.
+    """
+    SERIES_LEN = 1024
+    windows = list(windows)
+    B = len(windows)
+    x = torch.zeros(B, 1, SERIES_LEN, dtype=torch.float32)
+    mask = torch.zeros(B, SERIES_LEN, dtype=torch.float32)
+    for i, w in enumerate(windows):
+        a = np.nan_to_num(np.asarray(w, dtype=np.float32).reshape(-1), nan=0.0)
+        n = min(a.shape[0], SERIES_LEN)
+        x[i, 0, -n:] = torch.from_numpy(a[-n:])
+        mask[i, -n:] = 1.0
+    if normalize:
+        valid = mask.unsqueeze(1)                                    # (B, 1, T)
+        n = valid.sum(dim=2, keepdim=True).clamp(min=1.0)
+        mean = (x * valid).sum(dim=2, keepdim=True) / n
+        var  = ((x - mean) ** 2 * valid).sum(dim=2, keepdim=True) / n
+        x = (x - mean) / (var.sqrt() + 1e-5)
+        x = x * valid                                                # zero padding after normalize
+    x, mask = x.to(lens.device), mask.to(lens.device)
+    out = lens.encoder({"timeseries": x, "timepoint_mask": mask})
+    return out[:, -1, :].cpu().numpy()                               # CLS token → (B, 768)
+```
+
+Then the per-session loop:
 
 ```python
 read_indexes = list(range(0, num_rows - window_size + 1, step_size))
-for read_idx in read_indexes:
-    window = sensor_data[read_idx : read_idx + window_size]
-    emb = lens.embed(window.reshape(1, -1))   # → (768,)
+batch = [sensor_data[i : i + window_size] for i in read_indexes]
+embs = embed_short(lens, batch, normalize=True)                       # (n_windows, 768)
 ```
 
-A common starting point: `window_size=1024, step_size=512` (50% overlap). For short datasets (a few hundred rows), use smaller windows (e.g. 30 minutes for 1-min sampling) with heavy overlap (`step=5`).
+A common starting point: `window_size=1024, step_size=512` (50% overlap). For short datasets (a few hundred rows), use smaller windows (e.g. `window_size=60, step_size=10`) with heavy overlap. Batching all windows of a session into one encoder call (as above) is also significantly faster than calling `lens.embed()` per window.
 
 ## Normalization Choices
 
@@ -131,6 +167,27 @@ X = np.stack([np.concatenate(row) for row in pivot.values])
 Two requirements:
 - Same `sensor_order` at train, test, and inference time (or your KNN distances will be meaningless).
 - Every window must contain every sensor — drop windows where a sensor is missing.
+
+## Cross-session comparison: fit the projection jointly
+
+A common analyst question is "do these two sessions look similar to Omega?" — e.g. two driving sessions, two production runs, two patient recordings. The naive approach is to project each session's joint-state with its own UMAP/t-SNE/PCA fit, then plot both. **This doesn't answer the question**: each fit is independent, so the (x, y) coordinates aren't comparable across sessions — a window that's "similar" in embedding space could land at completely different 2D coordinates because UMAP fits its own neighborhood graph each time.
+
+Fit the projection on the **concatenated** joint-state matrix, then split the resulting coordinates back per session:
+
+```python
+# joint_a shape: (n_a, n_sensors * 768)
+# joint_b shape: (n_b, n_sensors * 768)  — must have the same column count
+
+import umap
+combined = np.vstack([joint_a, joint_b])
+reducer = umap.UMAP(n_components=2, random_state=0)
+coords = reducer.fit_transform(combined)              # (n_a + n_b, 2)
+coords_a, coords_b = coords[:joint_a.shape[0]], coords[joint_a.shape[0]:]
+```
+
+Both sets of coordinates now live in the same axis system, so spatial overlap means semantic similarity. Same idea for t-SNE and PCA (PCA's case is easier — `pca.fit(combined)` then `pca.transform(joint_a)` etc. — but the concat-and-split form works for all three).
+
+If the two sessions have different sensor sets, intersect first and slice the joint matrix accordingly: `n_sensors * 768` must match between `joint_a` and `joint_b` or the concat will fail. Pin a deterministic `common_sensors = sorted(set(sensors_a) & set(sensors_b))` and reshape `joint = joint.reshape(n_windows, n_sensors, 768)[:, idx_of_common, :].reshape(n_windows, -1)`.
 
 ## Wide vs long format: getting your data into the right shape
 
@@ -243,6 +300,48 @@ print("test acc:", clf.score(X_test, y_test))
 
 For anomaly detection, swap step 7 for `IsolationForest(contamination="auto").fit(X_train)` and don't pass `y_train` — labels are only used for evaluation. **Caveat**: Isolation Forest assumes anomalies are *rare and structurally different*. If your "anomaly" class is 30%+ of data and shares structure with normal (e.g. same machine, different operating mode), IF will collapse to predicting "all normal." That's a classification problem, not an anomaly-detection one — stick with the supervised baseline.
 
+## Caching: separate the joint state from the projection
+
+Encoder forward passes are the expensive step (~10s per session on MPS for a few hundred windows × 25 sensors). UMAP/t-SNE/PCA on the joint-state matrix is comparatively cheap but still seconds. If your app lets users switch projections or compare different session pairs, cache the two stages separately:
+
+- `joint_state_<session>_<window>_<step>.pkl` — the (n_windows, n_sensors × 768) matrix + per-window metadata (timestamps, raw signals, etc.). Heavy. Computed once per (session, window, step).
+- `embedding_<session>_<window>_<step>_<projection>.pkl` — the 2D/3D coords. Light. Computed once per (session, window, step, projection).
+- `compare_<primary>_<overlay>_<window>_<step>_<projection>.pkl` — both sets of coords from a joint fit. Computed once per session pair × params; reuses the two joint-state caches.
+
+This way, switching projection on the same session only re-runs the reduction (a few seconds), not the encoder. And comparing session A overlaid on B reuses the joint-state caches built for single-session views of A and B.
+
+Bump a `CACHE_VERSION` integer baked into the cache key whenever you change the shape of what you're persisting — invalidates old caches automatically without manual `rm -rf cache/`.
+
+## Building an embedding-viewer frontend
+
+If you're wrapping Omega embeddings in a React/Svelte/etc. UI — playback dashboard, trajectory plot, anomaly browser — **read [`DESIGN.md`](../../DESIGN.md) at the root of this repo before writing any CSS**. The Archetype design system (Tailwind v4 + `@archetypeai/ds-lib-tokens` + PP Neue Montreal sans/mono + OKLCH palette + dark-first) is the expected visual language for these demos. `newton-swat-demo` and `newton-wifi-demo` are the reference implementations — pattern-match them for layout (Menubar, Card, Badge with `good`/`warning`/`critical` variants, mono numbers, sharp 2px radii). Setting this up at the start is much cheaper than retrofitting later.
+
+## Distribution without weights: precompute → static JSON
+
+The Omega checkpoint is not always redistributable. To share an embedding-viewer demo with collaborators who don't have the `.pt`, run the full pipeline once on a privileged machine and emit JSON:
+
+```python
+# scripts/precompute.py — run once, writes one JSON per (session × projection × overlay)
+def main():
+    embedder = OmegaEmbedder()
+    for session in sessions:
+        for proj in ("umap", "tsne", "pca"):
+            r = compute_embedding(embedder, session, window_size=60, step_size=10,
+                                  projection=proj)
+            write_json(out_dir / f"{session}_w60_s10_{proj}.json", to_payload(r))
+    # plus: one sessions.json index, one cmp_<a>_<b>_<...>.json per ordered pair
+```
+
+Two design choices that make this nice:
+
+1. **Deterministic filenames built from UI state**: the frontend never needs a per-load index call — it constructs the URL from current selections (`/embeddings/<session>_w60_s10_<projection>.json` or `/embeddings/cmp_<primary>_<overlay>_w60_s10_<projection>.json`). One `sessions.json` lists what's available.
+
+2. **Match the live API's response shape exactly**: the precomputed JSON files should be structurally identical to whatever your FastAPI/Flask endpoint returns. Then the frontend code path is one `fetch()` regardless of whether the backend is live or fully static, and the dev-time live path stays useful for iteration.
+
+Total payload for a typical "viewer of N sessions" demo: ~100KB per (session, projection) JSON × 3 projections × N sessions (×2 if you also precompute every ordered pair for compare mode). For N=2 that's ~1.5MB — fits comfortably in a static-host repo and loads instantly. Beyond ~10 sessions, consider on-demand fetch from object storage rather than committing the JSONs to git.
+
+The frontend then runs as a pure static site (Vercel/Netlify/GitHub Pages); the encoder + checkpoint never leave the precompute machine.
+
 ## Beyond a baseline: threshold tuning + model selection
 
 The default KNN baseline often underperforms on the rare/expensive class — even when overall accuracy looks fine. Two leverage points before reaching for a different architecture:
@@ -332,14 +431,29 @@ def plot_trajectory(df_reduced, sort_by=None, connect=False, point_size=6):
 
 ## Common Pitfalls
 
-### 1. Constant-zero sensor columns
+### 1. Constant-zero or all-NaN sensor columns
 
 Sensors like `refVelocityBack` that are 0.0 across the whole dataset have `std=0`. Two failure modes:
 
 - With `normalize_input=True`, the encoder's instance norm divides by `std + 1e-5`, gives zero output, and produces a degenerate constant embedding. Not strictly an error, but adds zero signal and inflates feature dimensionality.
 - `StandardScaler` is robust (it returns zeros for constant features), but **manual `(x - mean) / std`** is not — that gives `0 / 0 = NaN`, which propagates into the encoder and out into the embeddings, then into t-SNE/KNN/IsolationForest, all of which raise `ValueError: Input X contains NaN`.
 
-**Fix**: drop them up front: `sensors = [c for c in sensors if df[c].std() > 0]`.
+Real OBD-II / SCADA / lab data also routinely contains **all-NaN "lookalike twin" columns** — e.g. an OBD-II logger emits both `hv_system_voltage` (PID not supported by the vehicle, 100% NaN) and `hv_voltage` (PID supported, real readings). Both end up in the wide-format CSV. Picking the wrong column means a flat zero/NaN strip in your visualization and degenerate embeddings for that sensor.
+
+**Fix**: filter on both std *and* NaN-fraction up front, and sanity-check `.describe()` on a couple of representative sessions before pinning a sensor list:
+
+```python
+def numeric_sensor_columns(df, max_nan_frac=0.5):
+    cols = []
+    for c in df.columns:
+        if c in metadata_cols: continue
+        s = pd.to_numeric(df[c], errors="coerce")
+        if s.isna().mean() > max_nan_frac: continue        # all-/mostly-NaN → drop
+        std = s.std(skipna=True)
+        if std is None or pd.isna(std) or std <= 0: continue # constant → drop
+        cols.append(c)
+    return cols
+```
 
 ### 2. NaN propagation is silent until the classifier
 
