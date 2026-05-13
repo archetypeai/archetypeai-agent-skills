@@ -14,7 +14,7 @@ Inspired by [mongodb/agent-skills](https://github.com/mongodb/agent-skills).
 | [newton-activity-monitor](skills/newton-activity-monitor/) | Vision-based analysis and Q&A using the Activity Monitor Lens |
 | [newton-sensor-streaming](skills/newton-sensor-streaming/) | Real-time sensor data ingestion patterns (BLE, OBD2, serial, etc.) |
 | [newton-batch-upload](skills/newton-batch-upload/) | Upload large files (> 255 MB) via multipart presigned URLs |
-| [newton-batch-inference](skills/newton-batch-inference/) | Create and monitor asynchronous batch processing jobs |
+| [newton-machine-state-batch](skills/newton-machine-state-batch/) | Run the Machine State pipeline as an async batch job (Omega 1.4 by default; millions of rows via n-shot KNN) |
 | [omega-local](skills/omega-local/) | Run the Omega 1.3 encoder locally from a checkpoint — offline embeddings, custom downstream models (KNN/IF/PCA), windowing & normalization patterns |
 
 ## Quick Start
@@ -38,7 +38,7 @@ cp -r skills/* your-project/.claude/skills/
 /newton-activity-monitor  # Analyze visual data
 /newton-sensor-streaming  # Connect hardware sensors
 /newton-batch-upload      # Upload large files (> 255 MB)
-/newton-batch-inference   # Run batch processing jobs
+/newton-machine-state-batch  # Run Machine State as a batch job (async, large datasets)
 /omega-local              # Run the Omega encoder locally (offline embeddings)
 ```
 
