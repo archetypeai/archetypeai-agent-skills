@@ -60,7 +60,15 @@ embedding = lens.embed(timeseries)   # shape (1, 1024) → (768,)
 
 `get_encoder_from_checkpoint(path)` (in `omega_core/model_loader.py`) is the lower-level loader if you need direct access to the `nn.Module`.
 
-**Device note**: as shipped, `EmbeddingLens.__init__` only autodetects CUDA vs CPU — it doesn't pick MPS. On Apple Silicon, pass it explicitly: `EmbeddingLens(..., device="mps")`. Or write a tiny wrapper that does `cuda → mps → cpu` autodetect (recommended if your encoder might run on multiple machines).
+**Device note**: as shipped, `EmbeddingLens.__init__` only autodetects CUDA vs CPU — it doesn't pick MPS. On Apple Silicon, pass it explicitly. One-liner that works portably across CUDA / MPS / CPU machines without a wrapper class:
+
+```python
+import torch
+device = "mps" if torch.backends.mps.is_available() else None
+lens = EmbeddingLens(checkpoint_path=..., device=device, ...)
+```
+
+Passing `device=None` falls through to the lens's CUDA/CPU autodetect, so the same line works on a CUDA box, an Apple Silicon laptop, and a CPU-only CI runner.
 
 ## Single-Channel Constraint
 
@@ -71,6 +79,35 @@ Omega's `in_channels=1`. **Do not** stack sensors along the channel axis. The su
 3. Concatenate embeddings across sensors at the **window** level for the downstream model (joint state).
 
 Trying to feed `(B, n_sensors, T)` raises `ValueError: Model only supports single-channel input`.
+
+## Sensor selection for directional time-series
+
+If your data comes from a moving object (vehicle, drone, robot, satellite), be careful which kinematic channels you feed in. Raw world-frame `vx`, `vy`, `ax`, `ay` encode **heading** (which way the object is pointing) along with **behavior** (what it's doing). The encoder will happily learn the heading — meaning two windows of "hard right turn at 5 m/s" land far apart in embedding space if one was heading north and the other east. That's almost never what you want; downstream clustering then splits along compass direction instead of along behavior.
+
+The fix is to choose **heading-invariant scalars only**:
+
+| Channel | Invariant? | Why |
+|---|---|---|
+| `speed = hypot(vx, vy)` | ✓ | Magnitude of velocity; doesn't care about direction |
+| `yaw_rate` (rad/s, angular velocity about vertical axis) | ✓ | Rate of heading change, frame-independent |
+| `ax_body` (longitudinal accel in body frame) | ✓ | "How hard accelerating / braking" — relative to vehicle, not world |
+| `ay_body` (lateral accel in body frame) | ✓ | "Cornering force" — relative to vehicle |
+| `vx`, `vy`, `ax`, `ay` (world frame) | ✗ | Direction-dependent |
+| `yaw`, `x`, `y` (absolute pose) | ✗ | Translate or rotate the whole log and you get different embeddings |
+
+If you have world-frame accelerations and yaw, the body-frame projection is two lines:
+
+```python
+import numpy as np
+
+cy, sy = np.cos(yaw), np.sin(yaw)
+ax_body =  ax * cy + ay * sy   # longitudinal: + accelerating, − braking
+ay_body = -ax * sy + ay * cy   # lateral: signed (left positive)
+```
+
+For clustering and cluster-mean summaries downstream, take the **absolute value** of signed turning channels (`|yaw_rate|`, `|ay_body|`) when computing per-cluster averages — "turning hard left" and "turning hard right" should land in the same cluster, distinguished from "going straight," not from each other. (Keep the signed series as the encoder *input*; only fold the sign at summary time.)
+
+This isn't Omega-specific — it applies to any time-series encoder you'd substitute in — but it bites particularly hard on multi-session datasets that span different headings (e.g. cars driven in different cities, drones flown in different orientations).
 
 ## Windowing
 
@@ -300,6 +337,86 @@ print("test acc:", clf.score(X_test, y_test))
 
 For anomaly detection, swap step 7 for `IsolationForest(contamination="auto").fit(X_train)` and don't pass `y_train` — labels are only used for evaluation. **Caveat**: Isolation Forest assumes anomalies are *rare and structurally different*. If your "anomaly" class is 30%+ of data and shares structure with normal (e.g. same machine, different operating mode), IF will collapse to predicting "all normal." That's a classification problem, not an anomaly-detection one — stick with the supervised baseline.
 
+## Unsupervised cluster discovery: HDBSCAN + auto-labels
+
+Once you have a joint-state matrix, clustering surfaces "what behaviors did the encoder find?" without supervision. **HDBSCAN** is the right default — it finds variable-shape groups, marks borderline points as **noise** instead of forcing them into clusters, and doesn't require choosing `k`.
+
+### Cluster on PCA-50, not raw or UMAP-2D
+
+Three obvious options for clustering input, only one is right:
+
+| Input | Dim | What happens |
+|---|---|---|
+| Raw joint state | `n_sensors × 768` (e.g. 3072) | Density too sparse — HDBSCAN finds 1–2 clusters and dumps everything else as noise |
+| **PCA-50 of joint state** | 50 | **Sweet spot** — preserves ~95–98% variance, density is well-defined |
+| UMAP-2D coords | 2 | Over-collapsed — HDBSCAN finds many tiny "clusters" that are artifacts of UMAP's local-neighborhood objective |
+
+PCA-50 (or wherever ~95–98% explained variance lands) is the natural default. It's also exactly what you'd hand IsolationForest, so caching once and reusing is natural.
+
+```python
+from sklearn.cluster import HDBSCAN
+hdb = HDBSCAN(min_cluster_size=20, min_samples=5).fit(stacked_pca50)
+labels = hdb.labels_                       # cluster_id per window, -1 = noise
+```
+
+`min_cluster_size=20` is a starting point — bump it up for noisier data, down if you have <500 windows total.
+
+### Auto-label clusters from the *original signals*, not the embeddings
+
+HDBSCAN gives you anonymous cluster IDs (`0, 1, 2, …`). To make them human-readable, compute per-cluster averages on the **original windowed sensor data** (embeddings are uninterpretable for this) and run a small rule table:
+
+```python
+def label_from_stats(speed, yaw_abs, ax, ay_abs) -> str:
+    """First match wins — ordering matters."""
+    if speed < 0.7:        return "stopped"
+    if yaw_abs > 0.18:     return "sharp turn"
+    if yaw_abs > 0.08:     return "turning"
+    if ax < -1.0:          return "braking"
+    if ax > 1.0:           return "accelerating"
+    if speed > 11.0:       return "fast cruising"
+    if speed > 6.0:        return "cruising"
+    return "creeping"
+
+# stacked_stats: (n_windows, n_summary_features) — e.g. [speed, |yaw_rate|, ax_body, |ay_body|]
+labels_text = []
+for cid in sorted(set(labels) - {-1}):
+    means = stacked_stats[labels == cid].mean(axis=0)
+    labels_text.append(label_from_stats(*means))
+```
+
+Tailor the rule table to the domain (vehicles → kinematic states; chillers → on/off/transient; meters → idle/peak/ramp). Keep it short and ordered — it's a labeling heuristic, not a classifier.
+
+### Disambiguate duplicate labels with A/B/C suffixes
+
+The rule table is intentionally coarse — multiple clusters often land on the same label. Disambiguate with a suffix in cluster_id order:
+
+```python
+seen, counts = {}, {l: labels_text.count(l) for l in set(labels_text)}
+for i, lbl in enumerate(labels_text):
+    if counts[lbl] > 1:
+        idx = seen.get(lbl, 0)
+        labels_text[i] = f"{lbl} {chr(ord('A') + idx)}"
+        seen[lbl] = idx + 1
+```
+
+### Why duplicate labels are a feature, not a bug
+
+The rule table summarizes each cluster by ~4 averaged numbers. The encoder saw the full window — much more nuance. So you'll often see e.g. three `stopped` clusters that look identical on the summary stats (speed=0, yaw=0, accel≈0) but live in three distinct regions of latent space. **That's the encoder telling you it found texture inside the window that your summary flattens** — brake-release pattern, micro-yaw of settling, approach style, …
+
+A common finding: same-label clusters frequently align with a **categorical attribute the encoder was never told about** — one city per `stopped` variant, one operator per `idle` variant, one production line per `peak` variant. Cross-tabulate cluster_id against the categorical to check:
+
+```python
+import pandas as pd
+df = pd.DataFrame({"category": category_per_window, "cluster": labels})
+pd.crosstab(df["cluster"], df["category"])  # one column dominates per row → fingerprint
+```
+
+That's often the headline result — "the encoder learned to distinguish how each `<entity>` does `<common behavior>`, without ever being told what entity it was."
+
+### Treat noise as honest signal
+
+HDBSCAN typically labels 30–70% of windows as `-1` (noise), especially on smooth-manifold data where most windows are transitions between states. **This is not a parameter problem to tune away.** The encoder formed tight identities for a handful of behaviors and a smooth manifold for the rest; the rest doesn't have well-defined cluster membership, and saying so honestly is more useful than forcing it. Render noise in transparent gray on the scatter and move on.
+
 ## Caching: separate the joint state from the projection
 
 Encoder forward passes are the expensive step (~10s per session on MPS for a few hundred windows × 25 sensors). UMAP/t-SNE/PCA on the joint-state matrix is comparatively cheap but still seconds. If your app lets users switch projections or compare different session pairs, cache the two stages separately:
@@ -315,6 +432,19 @@ Bump a `CACHE_VERSION` integer baked into the cache key whenever you change the 
 ## Building an embedding-viewer frontend
 
 If you're wrapping Omega embeddings in a React/Svelte/etc. UI — playback dashboard, trajectory plot, anomaly browser — **read [`DESIGN.md`](../../DESIGN.md) at the root of this repo before writing any CSS**. The Archetype design system (Tailwind v4 + `@archetypeai/ds-lib-tokens` + PP Neue Montreal sans/mono + OKLCH palette + dark-first) is the expected visual language for these demos. `newton-swat-demo` and `newton-wifi-demo` are the reference implementations — pattern-match them for layout (Menubar, Card, Badge with `good`/`warning`/`critical` variants, mono numbers, sharp 2px radii). Setting this up at the start is much cheaper than retrofitting later.
+
+### Click-to-replay anomaly windows
+
+If IsolationForest is in the pipeline, the most useful interaction in an embedding viewer is **click an anomaly point → auto-replay that 8-second window**. Concretely:
+
+1. Each anomaly point on the embedding scatter gets a click handler. If the demo also has a map / route / signal track, mirror the anomaly markers there with the same click behavior so the user can drive from either side.
+2. The click jumps playback to the **start** of the window (not the centre — users want the lead-in).
+3. Playback runs through to the end of the window at the user's current speed setting (1×, 5×, 50×, …), then **auto-pauses**.
+4. One click → one anomaly replayed in full, no scrubbing.
+
+The window-aware auto-pause is the bit that makes this feel like a tool rather than a toy — without it, users have to mash spacebar to stop with no way to know where the window ended.
+
+Give `is_anomaly` points a distinct color (e.g. red) and a slightly larger marker on the scatter so they're easily targetable, and render them **above** the normal cluster coloring so they don't disappear into a dense group. Their hover tooltip is a good place to show `anomaly_score` ("higher = more normal" in sklearn's IsolationForest, so sorting ascending gives the most-anomalous-first).
 
 ## Distribution without weights: precompute → static JSON
 
