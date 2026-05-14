@@ -25,7 +25,7 @@ Create and monitor asynchronous batch jobs that run the **Newton C language mode
 
 The streaming/synchronous counterpart is [`newton-query-prompting`](../newton-query-prompting/SKILL.md) — same C model, different orchestration. Use this skill when you need to fold thousands-to-millions of prompts asynchronously; use `/query` when you have one state snapshot and need an answer in 3–6 s.
 
-The empirical numbers below — the ~4K-token quality cliff, the six-stage MapReduce shape, the two silent join bugs — come from an internal worked example folding 1 GB of WiFi flow CSV (5.8 M flows across 24 devices × 24 hours) into 9 daily narratives. The patterns are model- and dataset-independent; only the depth of the hierarchy changes with the cliff value.
+Worked end-to-end example, including the full MapReduce code: [**archetypeai-batch-examples-ghost-iot**](https://github.com/archetypeai/archetypeai-batch-examples-ghost-iot) — 1 GB of synthetic WiFi flow CSV (5.8 M flows across 24 devices × 24 hours) folded into 9 daily narratives via six reduce stages. The numbers and pattern depths quoted below come from that pipeline; the patterns are model- and dataset-independent — only the depth of the hierarchy changes with the cliff value.
 
 ## When to Apply
 
@@ -141,7 +141,7 @@ The Newton C model has a **nominal context budget of 16,384 tokens** but a much 
 
 **The failure is silent.** No `WARN` event, no `FAILED` status. The job reports `Status: COMPLETED`, `0 failed`. The only signal is reading the predictions themselves.
 
-Empirical cliff sweep on CSV-heavy `inputs[0].data`:
+Empirical cliff sweep on CSV-heavy `inputs[0].data` (from the [ghost-iot worked example](https://github.com/archetypeai/archetypeai-batch-examples-ghost-iot), §10.6 of the README):
 
 | `inputs[0].data` size | ~Tokens | Output |
 |---|---|---|
@@ -174,7 +174,7 @@ Once you know the cliff, every reduce stage in a pipeline answers the same quest
 
 ### Worked shape — folding 1 GB of CSV into 9 narratives
 
-Observed across one internal end-to-end run on the C 2.4 model (1 GB of WiFi flow CSV, 5.8 M flows across 24 devices × 24 hours, multi-tenant topology of 3 homes × 2 humans × 4 devices/human):
+From the [ghost-iot worked example](https://github.com/archetypeai/archetypeai-batch-examples-ghost-iot), §8 of the README — observed across one end-to-end run on the C 2.4 model (1 GB of WiFi flow CSV, 5.8 M flows across 24 devices × 24 hours, multi-tenant topology of 3 homes × 2 humans × 4 devices/human):
 
 ```
 chunks (≤16 KB each, every flow preserved) → bucket reduce
@@ -220,7 +220,7 @@ for group_index, group in enumerate(groups):
 # If it isn't, decrease K and re-pack.
 ```
 
-Pick `K` so the worst-case packed size sits comfortably below the cliff. The internal worked example settled at `K=3` for chunks→partials and `K=4` for the higher layers.
+Pick `K` so the worst-case packed size sits comfortably below the cliff. The ghost-iot pipeline settled at `K=3` for chunks→partials and `K=4` for the higher layers.
 
 ## N-way Batch Split (concurrency, optional)
 
@@ -317,6 +317,8 @@ Run this after every `cat split_*.jsonl`. Skipping it silently breaks the next r
 
 ## Example Code
 
-For the basic single-file pattern (no MapReduce), [**archetypeai-batch-examples-volve**](https://github.com/archetypeai/archetypeai-batch-examples-volve) ships a working batch upload + job creation + polling + download flow that's reusable for the `activity-detection` pipeline — only the JSONL input shape and the `pipeline_key` differ from the Machine State example. The orchestration helpers (`upload_multipart.py`, the polling loop, the paginated outputs download) are pipeline-agnostic.
+[**archetypeai-batch-examples-ghost-iot**](https://github.com/archetypeai/archetypeai-batch-examples-ghost-iot) — full public end-to-end pipeline for the `activity-detection` batch flow: data prep → upload → batch jobs → outputs → join → view, in Python, shell, and curl. Covers both the **simple single-record pattern** (§2–6 of the README — one prompt summarizing a whole filtered day) and the **multi-home MapReduce pattern at GB scale** (§8 — 23 K chunks → six reduce stages → 9 daily narratives). Has the cliff-sweep methodology (§8.2 / §10.6), content-key join (§10.7), `line_index` renumbering (§10.8), and observed wall-clock across all stages.
 
-A public worked example of the full MapReduce / hierarchical-reduce pattern described above is in the works; until then, the curl snippets and pseudo-code in this skill are self-contained.
+The orchestration code is pipeline-agnostic — `upload_multipart.py`, the polling loop, and the paginated outputs download transfer unchanged to any other `pipeline_key`. Only the prep scripts (which build the per-stage JSONL) are activity-detection-specific.
+
+See also [`EXPERIENCE.md`](https://github.com/archetypeai/archetypeai-batch-examples-ghost-iot/blob/main/EXPERIENCE.md) in that repo — long-form writeup of *why* the design ended up needing six MapReduce stages instead of one fold.

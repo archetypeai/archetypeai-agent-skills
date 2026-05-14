@@ -79,6 +79,7 @@ These projects demonstrate the patterns covered by these skills:
 - [newton-drilling-demo](https://github.com/archetypeai/newton-drilling-demo) — Drilling state classification from 14 North Sea wells + Newton Machine State Lens (SSE streaming)
 - [newton-swat-demo](https://github.com/archetypeai/newton-swat-demo) — 6-stage water treatment plant anomaly dashboard with parallel per-stage Machine State Lens sessions + `/query`-generated operator suggestions (reference implementation for both `newton-machine-state` parallel-subsystem pattern and `newton-query-prompting`)
 - [archetype-batch-examples](https://github.com/archetypeai/archetype-batch-examples) — Batch upload, inference, and evaluation with Volve drilling data (Machine State + Activity Detection)
+- [archetypeai-batch-examples-ghost-iot](https://github.com/archetypeai/archetypeai-batch-examples-ghost-iot) — 1 GB WiFi flow CSV folded into 9 daily narratives via six MapReduce stages on the `activity-detection` batch pipeline (reference implementation for `newton-activity-detection-batch` — cliff sweep, hierarchical reduce, N-way positional split, content-key joins)
 
 ## API Base URL
 
