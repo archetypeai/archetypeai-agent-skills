@@ -56,9 +56,9 @@ For new projects pick `omega_1_4_base` — it removes the "exactly 9 sensors" co
 - N-shot files must produce at least `n_neighbors` windows: `(rows − window_size) / step_size ≥ n_neighbors`.
 - For drilling specifically, the `omega_1_3_surface` n-shot labels should come from ACTC rig mode codes, not sensor heuristics — control-system ground truth is more reliable than thresholded readings.
 
-### Example: TEP chemical-plant classification (52 process variables)
+### Example: process-plant classification with `omega_1_4_base` (52 variables)
 
-This is the canonical `omega_1_4_base` example — full source in [archetypeai-batch-examples-tep](https://github.com/archetypeai/archetypeai-batch-examples-tep). Two n-shot files (`normal`, `fault`) classify the full 15.3M-row inference split into a binary state.
+Classifying a chemical-plant process dataset (the public [Tennessee Eastman Process](https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/6C3JR1) benchmark — 52 process variables, 21 fault types) into binary `normal` vs `fault` from two n-shot example files. This is the canonical `omega_1_4_base` shape — the config below is what you should clone for any new project, regardless of domain.
 
 ```bash
 curl -s -X POST "$BASE_URL/batch/jobs" \
@@ -205,7 +205,7 @@ The Machine State pipeline has several tunable hyperparameters. Use grid search 
 | `metric` | euclidean, cosine, manhattan | Distance metric |
 | `weights` | uniform, distance | KNN weight function |
 
-Grid-search scripts: [`optimize_config.py` in archetypeai-batch-examples-tep](https://github.com/archetypeai/archetypeai-batch-examples-tep/blob/main/3_batch_jobs/optimize_config.py) (96 combinations, batched 10-wide, `omega_1_4_base`) or [the equivalent in archetypeai-batch-examples-volve](https://github.com/archetypeai/archetypeai-batch-examples-volve/blob/main/3_batch_jobs/optimize_config.py) (`omega_1_3_surface`).
+See [`optimize_config.py` in archetypeai-batch-examples-volve](https://github.com/archetypeai/archetypeai-batch-examples-volve/blob/main/3_batch_jobs/optimize_config.py) for a working grid-search script. The pattern transfers to `omega_1_4_base` unchanged — just swap `model_type` and `data_columns`.
 
 ## API Reference
 
@@ -243,6 +243,6 @@ Fine-tuning via `POST /v0.5/internal/experiment/runner/jobs` is not yet availabl
 
 ## Example Code
 
-Primary reference — **`omega_1_4_base` end-to-end:** [archetypeai-batch-examples-tep](https://github.com/archetypeai/archetypeai-batch-examples-tep). 15.3M rows, 52 process variables, 21 fault types, full pipeline (data prep → upload → batch jobs → outputs → evaluation → config optimization) in Python, shell, and curl.
+[**archetypeai-batch-examples-volve**](https://github.com/archetypeai/archetypeai-batch-examples-volve) — full public end-to-end pipeline for the Machine State batch flow: data prep → upload → batch job → outputs → evaluation → config optimization, in Python, shell, and curl. Pinned to `omega_1_3_surface` over 9 drilling channels (Volve North Sea well data), but the orchestration code, optimize_config grid search, and evaluation utilities transfer to `omega_1_4_base` unchanged — switch `model_type` and broaden `data_columns` to match your sensor set.
 
-Legacy reference — **`omega_1_3_surface` for drilling:** [archetypeai-batch-examples-volve](https://github.com/archetypeai/archetypeai-batch-examples-volve). Same pipeline shape, fixed at the 9 surface drilling channels. Use as a template only if you're already locked into the 1.3 encoder.
+Use this repo as a template even if your default model is `omega_1_4_base`. The only Volve-specific bits are the `data_columns` list and the n-shot files; everything else (upload helpers, job creation, polling loop, output download, evaluation) is reusable as-is.
