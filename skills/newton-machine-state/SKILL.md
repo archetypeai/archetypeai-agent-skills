@@ -260,7 +260,7 @@ Canonical shape: the subsystems share the same n-shot focus files (`swat_normal.
   model_pipeline: [{ processor_name: 'lens_timeseries_state_processor' }],
   model_parameters: {
     model_name: 'OmegaEncoder',
-    model_version: 'OmegaEncoder::omega_embeddings_01',
+    model_version: 'OmegaEncoder::omega_embeddings_1_4',
     buffer_size: 30,
     input_n_shot: { NORMAL: normalFileId, ATTACK: attackFileId },
     csv_configs: {
@@ -272,6 +272,8 @@ Canonical shape: the subsystems share the same n-shot focus files (`swat_normal.
   }
 }
 ```
+
+`omega_embeddings_1_4` is the current default encoder version for Machine State. Other Omega encoder versions may be available on your account (newer builds, domain-specialized variants) — check with your Newton API contact for the current list, then swap the `model_version` string accordingly.
 
 Streaming per window fans out too — transpose the current window to channel-first (`[[col1 values], [col2 values], ...]`, not row-major) and `POST /lens/sessions/events/process` to each session in parallel. On the consumer side the browser opens N concurrent `EventSource` connections (one per session) and bucket-sorts incoming `inference.result` events by session ID to update per-subsystem state.
 
@@ -311,4 +313,4 @@ See [references/parallel-subsystem-pattern.md](references/parallel-subsystem-pat
 
 ## Building a frontend on top of this
 
-If you're wrapping the Machine State Lens in a React/Svelte/etc. UI — per-stage anomaly dashboard, real-time classification monitor, n-shot replay tool — **read [`DESIGN.md`](../../DESIGN.md) at the root of this repo before writing any CSS**. The Archetype design system (Tailwind v4 + `@archetypeai/ds-lib-tokens` + PP Neue Montreal sans/mono + OKLCH palette + dark-first) is the expected visual language for these demos. [`newton-swat-demo`](https://github.com/archetypeai/newton-swat-demo) is the canonical reference implementation for Machine State (6 parallel SSE sessions, per-stage cards with `good` / `warning` / `critical` Badge variants, mono numeric readouts, sharp 2px radii); [`newton-wifi-demo`](https://github.com/archetypeai/newton-wifi-demo) shows the same patterns applied to a different domain. Setting this up at the start is much cheaper than retrofitting later.
+If you're wrapping the Machine State Lens in a React/Svelte/etc. UI — per-stage anomaly dashboard, real-time classification monitor, n-shot replay tool — **read [`DESIGN.md`](../../DESIGN.md) at the root of this repo before writing any CSS**. The Archetype design system (Tailwind v4 + `@archetypeai/ds-lib-tokens` + Geist sans/mono + OKLCH palette + dark-first) is the expected visual language for these demos. [`newton-swat-demo`](https://github.com/archetypeai/newton-swat-demo) is the canonical reference implementation for Machine State (6 parallel SSE sessions, per-stage cards with `good` / `warning` / `critical` Badge variants, mono numeric readouts, sharp 2px radii); [`newton-wifi-demo`](https://github.com/archetypeai/newton-wifi-demo) shows the same patterns applied to a different domain. Setting this up at the start is much cheaper than retrofitting later.
