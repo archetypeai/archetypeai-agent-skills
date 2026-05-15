@@ -72,7 +72,7 @@ const lenses = await Promise.all(
         model_pipeline: [{ processor_name: 'lens_timeseries_state_processor' }],
         model_parameters: {
           model_name: 'OmegaEncoder',
-          model_version: 'OmegaEncoder::omega_embeddings_01',
+          model_version: 'OmegaEncoder::omega_embeddings_1_4',
           buffer_size: 30,
           input_n_shot: { NORMAL: normalFileId, ATTACK: attackFileId },
           csv_configs: { data_columns: cols, window_size: 30, step_size: 30 },
