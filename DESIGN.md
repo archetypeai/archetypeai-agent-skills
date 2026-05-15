@@ -6,13 +6,13 @@ Archetype AI's design system is built for **Physical AI interfaces** — dashboa
 
 The foundation is a near-black background (`oklch(0.141 0.005 285.823)`) with light foreground text (`oklch(0.985 0 0)`), creating a high-contrast canvas where data visualizations, status indicators, and sensor readouts command attention. Cards float on a slightly lighter surface (`oklch(0.21 0.006 285.885)`) with `10%` white borders that create subtle depth without distraction.
 
-Typography uses **PP Neue Montreal** — a geometric neo-grotesque sans-serif — paired with **PP Neue Montreal Mono** for technical data. The mono font appears on badges, card headers, numeric readouts, and status labels — never on body text. Headings are set in normal weight (400) with tight tracking, giving them an understated, engineering-grade quality rather than marketing boldness.
+Typography uses **Geist** — Vercel's open-source geometric sans-serif — paired with **Geist Mono** for technical data. The mono font appears on badges, card headers, numeric readouts, and status labels — never on body text. Headings are set in normal weight (400) with tight tracking, giving them an understated, engineering-grade quality rather than marketing boldness.
 
 The brand's color palette is deliberately scientific: **Baby Blue** for neutral states, **Screen Green** for healthy/good, **Sunshine Yellow** for warnings, and **Fire Red** for critical alerts. A secondary palette of **Cool Purple**, **Energy Pink**, **Tangerine**, and **Lime** provides chart series colors. These are OKLCH-native, perceptually uniform, and designed for data legibility across light and dark modes.
 
 **Key Characteristics:**
 - Dark-first design with near-black backgrounds and high-contrast text
-- PP Neue Montreal (sans) + PP Neue Montreal Mono (mono) type pairing
+- Geist (sans) + Geist Mono (mono) type pairing
 - OKLCH color system — perceptually uniform across all palettes
 - Semantic status colors: green (good), yellow (warning), red (critical), blue (neutral)
 - Data-dense layouts: full-viewport dashboards, no scrolling, 2×2/3×2 panel grids
@@ -71,41 +71,40 @@ The brand's color palette is deliberately scientific: **Baby Blue** for neutral 
 
 ```css
 @import "@archetypeai/ds-lib-tokens/theme.css";
-@import "@archetypeai/ds-lib-tokens/fonts.css";
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
 @import "tailwindcss";
 @import "tw-animate-css";
 ```
 
 Order matters — tokens and fonts must come before Tailwind.
 
+> Note for Agent Skills demos: do **not** import `@archetypeai/ds-lib-tokens/fonts.css`. That file expects PP Neue Montreal font files to be copy-pasted into the app — a commercial license we deliberately avoid in public demos. Pull Geist directly from `@fontsource-variable/geist*` instead until the tokens package is updated to ship Geist itself.
+
 ### Font Families
-- **Sans**: `PP Neue Montreal`, fallbacks: `system-ui, -apple-system, sans-serif`
-- **Mono**: `PP Neue Montreal Mono`, fallbacks: `Courier New, monospace`
+- **Sans**: `Geist Variable`, fallbacks: `system-ui, -apple-system, sans-serif`
+- **Mono**: `Geist Mono Variable`, fallbacks: `ui-monospace, SFMono-Regular, Menlo, monospace`
 
-### Font Files
-Place font files in `static/fonts/`:
-- Sans: `PPNeueMontreal-{Thin,Light,Regular,Book,Medium,Bold,Italic,ThinItalic,BoldItalic}.ttf`
-- Mono: `PPNeueMontrealMono-{Thin,Regular,Book,Medium,Bold,RegularItalic}.otf`
-
-The `fonts.css` import references these at `/fonts/PPNeueMontreal-*.ttf` and `/fonts/PPNeueMontrealMono-*.otf`.
+Use **Geist Font from Vercel** — official source: [vercel.com/font](https://vercel.com/font#get). Geist is open-source under the SIL Open Font License, so it's safe to bundle in public repos. Install via `npm i @fontsource-variable/geist @fontsource-variable/geist-mono` for framework-agnostic projects (this is the path Vercel themselves recommend outside Next.js); Next.js apps can use Vercel's official `geist` package directly. If the font fails to load, the fallback stack (`system-ui` for sans, `ui-monospace` for mono) renders the UI without licensing risk and without breaking the visual hierarchy.
 
 ### Font Weights Available
-- **Sans**: 100 (Thin), 300 (Light), 400 (Regular/Book), 500 (Medium), 700 (Bold)
-- **Mono**: 100 (Thin), 400 (Regular/Book), 500 (Medium), 700 (Bold)
+Geist supports the full 100–900 weight axis (variable). Named cuts:
+- **Sans**: 100 (Thin), 200 (UltraLight), 300 (Light), 400 (Regular), 500 (Medium), 600 (SemiBold), 700 (Bold), 800 (Black), 900 (UltraBlack)
+- **Mono**: 100 (Thin), 200 (UltraLight), 300 (Light), 400 (Regular), 500 (Medium), 600 (SemiBold), 700 (Bold), 800 (Black), 900 (UltraBlack)
 
 ### Heading Hierarchy
 
 | Element | Font | Size | Weight | Line Height | Tracking | Transform | Notes |
 |---------|------|------|--------|-------------|----------|-----------|-------|
-| `h1` | PP Neue Montreal | 2.25rem (36px) | 400 (normal) | normal | tight | capitalize | Primary page title |
-| `h2` | PP Neue Montreal | 1.875rem (30px) | 400 (normal) | tight | tight | — | Section heading |
-| `h3` | PP Neue Montreal | 1.5rem (24px) | 400 (normal) | normal | tight | — | Subsection heading |
-| `h4` | PP Neue Montreal | 1.25rem (20px) | 400 (normal) | tight | tight | — | Muted foreground color |
-| `h5` | PP Neue Montreal | 1.125rem (18px) | 400 (normal) | tight | tight | uppercase | Muted, uppercase label |
-| `h6` | PP Neue Montreal | 1rem (16px) | 400 (normal) | tight | tight | — | Muted smallest heading |
-| `p` | PP Neue Montreal | 0.875rem (14px) | 400 | tight | normal | — | Body text |
-| `small` | PP Neue Montreal | 0.75rem (12px) | 400 | tight | normal | — | Captions, fine print |
-| `code` | PP Neue Montreal Mono | 0.875rem (14px) | 400 | relaxed | normal | — | Inline code |
+| `h1` | Geist | 2.25rem (36px) | 400 (normal) | normal | tight | capitalize | Primary page title |
+| `h2` | Geist | 1.875rem (30px) | 400 (normal) | tight | tight | — | Section heading |
+| `h3` | Geist | 1.5rem (24px) | 400 (normal) | normal | tight | — | Subsection heading |
+| `h4` | Geist | 1.25rem (20px) | 400 (normal) | tight | tight | — | Muted foreground color |
+| `h5` | Geist | 1.125rem (18px) | 400 (normal) | tight | tight | uppercase | Muted, uppercase label |
+| `h6` | Geist | 1rem (16px) | 400 (normal) | tight | tight | — | Muted smallest heading |
+| `p` | Geist | 0.875rem (14px) | 400 | tight | normal | — | Body text |
+| `small` | Geist | 0.75rem (12px) | 400 | tight | normal | — | Captions, fine print |
+| `code` | Geist Mono | 0.875rem (14px) | 400 | relaxed | normal | — | Inline code |
 
 ### Mono Font Usage (Critical Convention)
 The mono font (`font-mono`) is used deliberately on specific UI elements — never as body text:
@@ -333,8 +332,8 @@ Archetype AI interfaces are primarily designed for **desktop monitoring environm
 - Neutral: `oklch(0.794 0.091 250.497)` — Baby Blue
 
 ### Example Component Prompts
-- "Create a status dashboard card: dark background `oklch(0.21 0.006 285.885)`, 1px border at `oklch(1 0 0 / 10%)`, 2px border-radius. Header in PP Neue Montreal Mono, uppercase, tracking-wider, with a Lucide icon at stroke-width 1.25. Content area with `gap-6`."
-- "Design a status badge: rounded-md (6px radius), PP Neue Montreal Mono at 12px, uppercase. Use Screen Green `oklch(0.822 0.208 146.907)` background for healthy state with dark text."
+- "Create a status dashboard card: dark background `oklch(0.21 0.006 285.885)`, 1px border at `oklch(1 0 0 / 10%)`, 2px border-radius. Header in Geist Mono, uppercase, tracking-wider, with a Lucide icon at stroke-width 1.25. Content area with `gap-6`."
+- "Design a status badge: rounded-md (6px radius), Geist Mono at 12px, uppercase. Use Screen Green `oklch(0.822 0.208 146.907)` background for healthy state with dark text."
 - "Build a log item: 2px left color stripe (green/yellow/red by severity). Status badge with icon, mono uppercase label. Body text in muted gray `oklch(0.705 0.015 286.067)`, timestamp right-aligned in mono."
 - "Create a monitoring dashboard: full viewport, no scroll. Grid with fixed menubar top row. 2×2 panel grid with 16px gap. Each panel is a BackgroundCard with mono uppercase title and Lucide icon header."
 - "Design a line chart: use Cool Purple `oklch(0.66 0.177 299.333)` for primary series, Fire Red for secondary. Natural curve interpolation, 1.5px stroke. Dark background card container."
@@ -345,14 +344,14 @@ Archetype AI interfaces are primarily designed for **desktop monitoring environm
 - **ScrollArea in cards**: BackgroundCard's `CardContent` needs `min-h-0 flex-1` for `ScrollArea` to properly constrain and scroll inside flex containers.
 - **Status inference**: When classifying Newton's text responses (e.g., traffic normal vs congestion), check for negation patterns ("no visible incidents") before keyword matching to avoid false positives.
 - **Camera watermarks**: ALERTCalifornia cameras have a "UC San Diego" watermark. Newton reads it and assumes location — explicitly tell Newton to ignore watermarks in the instruction prompt.
-- **Plotly traces**: set `paper_bgcolor: "transparent"` and `plot_bgcolor: "transparent"` so the surrounding `bg-card` is visible — never hardcode a chart background color. Axis font: `family: "PP Neue Montreal Mono, monospace"`. Grid lines in dark mode: `gridcolor: "rgba(255,255,255,0.08)"` (matches the 10% white border convention). For a single primary line series, use Cool Purple `oklch(0.66 0.177 299.333)`; for time-revealed scatters (UMAP/t-SNE/PCA over a session timeline), `colorscale: "Viridis"` with the colorbar labeled in mono.
+- **Plotly traces**: set `paper_bgcolor: "transparent"` and `plot_bgcolor: "transparent"` so the surrounding `bg-card` is visible — never hardcode a chart background color. Axis font: `family: "Geist Mono, ui-monospace, monospace"`. Grid lines in dark mode: `gridcolor: "rgba(255,255,255,0.08)"` (matches the 10% white border convention). For a single primary line series, use Cool Purple `oklch(0.66 0.177 299.333)`; for time-revealed scatters (UMAP/t-SNE/PCA over a session timeline), `colorscale: "Viridis"` with the colorbar labeled in mono.
 - **Plotly `scatter3d` doesn't honor per-marker opacity arrays** (works in 2D `scatter`, silently ignored in 3D). To reveal points progressively in 3D, slice the `x`/`y`/`z` arrays each frame (`coords.slice(0, activeIdx + 1)`) instead of toggling opacity.
 - **Plotly with React + Vite**: skip `react-plotly.js@2.x` — its CommonJS factory breaks under Vite + React 19 with `createPlotlyComponent is not a function`. Call `Plotly.react(ref.current, traces, layout)` directly inside a `useEffect` and use a `ResizeObserver` for autosizing.
 
 ### Iteration Guide
 1. Start with the dark canvas — `oklch(0.141 0.005 285.823)` background
 2. Cards step up to `oklch(0.21 0.006 285.885)` with `oklch(1 0 0 / 10%)` borders
-3. PP Neue Montreal for everything — mono variant for technical data, sans for prose
+3. Geist for everything — Geist Mono for technical data, Geist Sans for prose
 4. All headings weight 400 — hierarchy from size and color, not boldness
 5. Status colors carry meaning: green = good, yellow = warning, red = critical, blue = info
 6. 2px border-radius on everything except badges (6px) and avatars (full)
