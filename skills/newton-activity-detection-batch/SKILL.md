@@ -9,12 +9,13 @@ description: >
   structured datasets (CSV logs, sensor flows, event streams) at
   offline scale, or to run per-record vision Q&A across many short
   videos / image batches without holding a `/query` session open.
-  Covers job creation, polling, output download, per-input-type
-  schemas, the empirical ~4K-token quality cliff for text-heavy
-  inputs, MapReduce / hierarchical reduce patterns for GB-scale
-  inputs, N-way positional split for batch concurrency, and the silent
-  join bugs (content-key vs. position-based join, `line_index`
-  collisions after concat) that bite when chaining reduce stages.
+  Covers job creation, polling, output download, cancellation,
+  per-input-type schemas, the empirical ~4K-token quality cliff for
+  text-heavy inputs, MapReduce / hierarchical reduce patterns for
+  GB-scale inputs, N-way positional split for batch concurrency, and
+  the silent join bugs (content-key vs. position-based join,
+  `line_index` collisions after concat) that bite when chaining reduce
+  stages.
   Do NOT use for time-series classification (use newton-machine-state-batch).
   Do NOT use for live streaming video Q&A (use newton-activity-monitor —
   it streams via Lens session with low latency, where this skill is
@@ -213,6 +214,51 @@ On per-record failure:
 
 `"parse error"` almost always means **the input wasn't JSONL** (raw CSV submitted by mistake, or a stray blank line). The job itself still returns `COMPLETED`.
 
+## Cancelling a Job
+
+A submitted batch job can be cancelled while it's in `PENDING` or `RUNNING`. The platform stops compute and the job's terminal status flips to `CANCELLED`.
+
+```bash
+curl -s -X POST "$BASE_URL/batch/jobs/$JOB_ID/cancel" \
+  -H "Authorization: Bearer $ATAI_API_KEY"
+```
+
+Response (200 OK):
+
+```json
+{
+  "id": "job_2abc3def4ghi5jkl6mno7pqr",
+  "status": "CANCELLED",
+  "cancelled_at": "2026-04-14T10:10:00Z"
+}
+```
+
+Response status codes:
+
+| Code | Meaning |
+|---|---|
+| `200` | Cancel accepted. Job will transition to `CANCELLED` (may not be instantaneous; the platform tears down the worker first). |
+| `404` | Job id not recognized. |
+| `409` | Job is already in a terminal state (`COMPLETED`, `FAILED`, `CANCELLED`). Nothing to cancel. |
+
+**Best treated as idempotent + best-effort**: if you're cancelling defensively in client code, treat `409` as success — the job is already done one way or another, so there's nothing more to stop.
+
+```python
+# Pattern: don't bubble 409 to the user — it just means "already gone"
+resp = requests.post(f"{base}/v0.5/batch/jobs/{job_id}/cancel", headers=headers)
+if resp.ok or resp.status_code == 409:
+    pass  # cancelled or already terminal — same outcome
+else:
+    raise RuntimeError(f"cancel failed: {resp.status_code} {resp.text}")
+```
+
+### Caveats worth knowing
+
+- **No per-record cancellation.** Cancel is a job-level operation. If you have 50 records mid-batch and cancel, the platform stops scheduling new ones; whatever record was actively running may complete on its hot pod before the worker tears down.
+- **No per-`/query` cancellation.** The synchronous `/query` endpoint (covered by [`newton-query-prompting`](../newton-query-prompting/SKILL.md)) has no documented cancel. Aborting the HTTP request closes the client connection but server-side compute may still run to completion.
+- **Cancel only releases *future* work.** Anything that already completed and was billed remains billed. If you're seeing partial output via `/outputs` already, cancelling won't refund it.
+- **The `cancelled_at` timestamp is set when the platform accepts the cancel**, not when the worker actually terminates. Subsequent `GET /batch/jobs/$JOB_ID` calls will show `status: "CANCELLED"` immediately, but `input_progress` may still show a record `processing` for a few seconds.
+
 ## The Quality Cliff (read this before designing anything)
 
 The Newton C model has a **nominal context budget of 16,384 tokens** but a much tighter **practical quality cliff at ~4K tokens (~16 KB of pipe-separated structured rows)**. Above the cliff the model silently degrades into table-completion mode and returns 1–3-character fragments like `'00'`, `'|153|'`, or empty strings.
@@ -370,6 +416,7 @@ Run this after every `cat split_*.jsonl`. Skipping it silently breaks the next r
 | `/v0.5/batch/jobs/{job_id}` | GET | Get job status |
 | `/v0.5/batch/jobs/{job_id}/events` | GET | Get job events / logs |
 | `/v0.5/batch/jobs/{job_id}/outputs` | GET | List output artifacts (paginated presigned URLs) |
+| `/v0.5/batch/jobs/{job_id}/cancel` | POST | Cancel a `PENDING` / `RUNNING` job; 409 if already terminal. See [Cancelling a Job](#cancelling-a-job). Docs: [archetypeai/docs](https://docs.archetypeai.app/api-reference/batch/jobs/cancel-job). |
 
 ## Common Errors
 
@@ -384,6 +431,7 @@ Run this after every `cat split_*.jsonl`. Skipping it silently breaks the next r
 | `validation errors for InferenceRecord — inputs.0.format Field required` | An `inputs[]` item used `file_id` instead of inline bytes | Use `{type, format: "base64", data: <b64-bytes>}` — `inputs[]` does not accept file_id references |
 | Upload returns `Unsupported file type: application/x-ndjson` | JSONL submitted via simple `POST /files` multipart-form | Switch to the 3-step presigned flow (`/files/uploads/initiate` → S3 `PUT` → `/complete`). See [`newton-batch-upload`](../newton-batch-upload/SKILL.md) |
 | `WARN inference.truncation … 1 items exceed token_budget=16384` on video records | Per-record token budget exceeded (e.g. 32 video frames + procedure prompt) | Often coped with — read predictions before reacting. To eliminate: reduce `max_video_frames`, shorten the prompt, or split the video into smaller chunks |
+| `POST /cancel` returns 409 | Job is already in a terminal state (`COMPLETED` / `FAILED` / `CANCELLED`) | Treat as success — nothing left to stop. See [Cancelling a Job](#cancelling-a-job). |
 
 ## Best Practices
 
