@@ -29,7 +29,9 @@ Create and monitor asynchronous batch jobs that classify time-series sensor data
 
 Classifies time-series sensor data using n-shot examples. Newton vectorizes each sensor window with an Omega encoder, then a hosted KNN classifier predicts the class label from the n-shot examples.
 
-**Pipeline key:** `machine-state-job-pipeline`
+**Pipeline key:** `machine-state-classification`
+
+This is the active deployment on both stage (`api.stage.u1.archetypeai.app`) and prod (`api.u1.archetypeai.app`) as of 2026-05-16 (`v1.1.1-409-e749ac0-rev5` on stage). The previously-documented `machine-state-job-pipeline` returns `Pipeline 'machine-state-job-pipeline' has no active versions` in both environments — it is not currently a usable key. The `machine-state-classification` deployment supports `omega_1_4_base` over arbitrary channel counts (verified with 4-channel vibration), so there is no channel-padding workaround required.
 
 ### Available model types
 
@@ -67,7 +69,7 @@ curl -s -X POST "$BASE_URL/batch/jobs" \
   -d '{
     "name": "tep-classification",
     "pipeline_type": "batch",
-    "pipeline_key": "machine-state-job-pipeline",
+    "pipeline_key": "machine-state-classification",
     "inputs": {
       "worker.inference": [{"file_id": "tep_inference.csv"}],
       "worker.n_shots": [
@@ -118,7 +120,7 @@ curl -s -X POST "$BASE_URL/batch/jobs" \
   -d '{
     "name": "drilling-classification",
     "pipeline_type": "batch",
-    "pipeline_key": "machine-state-job-pipeline",
+    "pipeline_key": "machine-state-classification",
     "inputs": {
       "worker.inference": [{"file_id": "volve_inference.csv"}],
       "worker.n_shots": [
@@ -229,7 +231,7 @@ Fine-tuning via `POST /v0.5/internal/experiment/runner/jobs` is not yet availabl
 | `n_neighbors must be <= number of samples in index` | N-shot files too small for `window_size` | Increase n-shot rows or decrease `window_size` |
 | `could not parse as dtype i64` | Mixed int/float values in CSV | Ensure all sensor values are formatted as floats |
 | `Failed to resolve file inputs` | File not uploaded | Upload file first via Files API ([newton-batch-upload](../newton-batch-upload/SKILL.md)) |
-| `Pipeline 'X' has no active versions` | Pipeline not deployed in this environment | Verify the pipeline_key is deployed — current value is `machine-state-job-pipeline` (the older `machine-state-classification` is retired) |
+| `Pipeline 'X' has no active versions` | Pipeline not deployed in this environment | Verify the pipeline_key is deployed — the active key on stage and prod is `machine-state-classification` (the newer `machine-state-job-pipeline` is documented but not currently deployed in either env; if a tool defaults to it you'll need to override). |
 
 ## Best Practices
 
