@@ -213,6 +213,39 @@ Separating the bar from the panel grid (own row, own border) keeps temporal cont
 - Emphasis/action: 2 (`--atai-icon-stroke-emphasis`)
 - Sizing: `size-4` (16px) in buttons, `size-6` (24px) in card headers
 
+### Schematic Equipment Icons (custom SVG)
+
+For domain hardware that doesn't exist in Lucide — tanks, ultrafiltration units, reverse-osmosis stages, drilling rigs, pumps, dosing skids — use hand-drawn schematic SVGs rather than reaching for a stock library. The convention is consistent across `newton-swat-demo`, `newton-drilling-demo`, and the other Newton demos that visualize physical equipment:
+
+```svelte
+<svg
+  viewBox="0 0 120 40"
+  class="text-muted-foreground h-10 w-full"
+  preserveAspectRatio="xMidYMid meet"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="1.25"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+>
+  <!-- equipment paths, e.g. raw-water tank with outflow pipe: -->
+  <rect x="18" y="8" width="36" height="26" rx="1" />
+  <path d="M 22 18 Q 27 15 32 18 T 42 18 T 50 18" stroke-width="0.75" />
+  <line x1="54" y1="26" x2="110" y2="26" />
+  <path d="M 106 22 L 110 26 L 106 30" />
+</svg>
+```
+
+Conventions:
+- **viewBox**: `0 0 120 40` (3:1) for a stage / process unit; `0 0 24 24` for inline icons.
+- **Stroke**: `currentColor` with `stroke-width="1.25"` matching the interactive icon weight from Lucide. Thinner accents (water surface, dotted flow) drop to `0.75`.
+- **Caps & joins**: always `round`.
+- **Fill**: `none` — equipment is line-art, not filled shapes. The dark canvas does the visual work.
+- **Color**: `text-muted-foreground` by default; switch to `text-atai-critical/70` (or another semantic status) when the stage is anomalous so the schematic reads as a status surface, not just decoration.
+- **Aspect**: `preserveAspectRatio="xMidYMid meet"` so the schematic centers cleanly when the container width changes.
+
+If you have a vector source from the customer (e.g. a P&ID excerpt) you can adapt that into this style by stripping fills, normalizing strokes to 1.25, and snapping the geometry to a 120×40 grid.
+
 ## 5. Layout Principles
 
 ### Spacing System
@@ -241,10 +274,102 @@ When the demo has a clear "raw input | model interpretation" duality — timelin
 `newton-obd2-demo` uses this for raw OBD-II playback on the left and the Omega embedding trajectory on the right, time-synced through a shared scrubber. The pattern generalizes to any "compare what the sensors saw against what the model concluded" case.
 
 ### Menubar
-- Fixed header: `border-b px-4 py-2`
-- Left: Archetype AI logo + optional partner branding (mono, uppercase)
-- Right: action buttons + dark mode toggle
-- Flexbox: `flex items-center justify-between`
+
+Identical across `newton-swat-demo`, `newton-drilling-demo`, `newton-wifi-demo`, `newton-grid-demo`, `newton-wildfire-demo` — treat this as the canonical pattern, copy verbatim rather than re-inventing:
+
+```svelte
+<header class="border-border flex items-center justify-between border-b px-4 py-2">
+  <div class="flex items-center gap-3">
+    <Logo class="h-6" />
+    <SeparatorIcon class="text-muted-foreground size-6" strokeWidth={1} />
+    {@render partnerLogo()}    <!-- or a Badge variant="outline" placeholder -->
+  </div>
+  <div class="flex items-center gap-2">
+    {@render children()}        <!-- action buttons, status pills, etc. -->
+    <Button variant="outline" size="icon" onclick={toggleDark}>
+      {#if darkMode}<SunIcon />{:else}<MoonIcon />{/if}
+    </Button>
+  </div>
+</header>
+```
+
+Key details:
+- Full-bleed (`border-b`, no max-width container) — the menubar always spans the viewport.
+- **Wordmark asset:** [`assets/archetype-wordmark.svg`](../../assets/archetype-wordmark.svg) in this repo. Single 190×35 `viewBox`, one `fill="currentColor"` path (~14 KB). The path is achromatic — it renders in whatever `color` the *surrounding* element resolves to, so the same file works on both backgrounds (in dark mode, give it `text-foreground` ≈ near-white; in light mode, `text-foreground` ≈ near-black; the wordmark flips automatically with the theme). **Inline** the SVG (drop the `<svg>` element directly into your JSX/Svelte) so the `currentColor` cascade works — `<img src="…">` and `background-image: url(…)` ignore the parent's `color`, so the wordmark renders as nothing visible. The seven Newton demos in this catalogue (swat, drilling, wifi, grid, wildfire, traffic, earthquake) each hand-inlined this same SVG in their own `src/lib/components/ui/patterns/logo/logo.svelte` — those copies are byte-identical, but the version in `assets/` is now the single source of truth, so future demos should reference *that* file rather than copy from a sibling demo. `@archetypeai/ds-lib-tokens` ships theme/token CSS but does **not** include the wordmark asset.
+- Separator is a Lucide `Minus` icon at `strokeWidth={1}` and `size-6` — *not* a CSS divider or pipe character.
+- Partner branding goes to the right of the separator. When you don't have one, a `<Badge variant="outline">Partner Logo</Badge>` is the standard placeholder so the slot stays visible during development.
+- The dark-mode button is a `Button variant="outline" size="icon"` with Sun/Moon swap, wrapped in `document.startViewTransition` so the canvas crossfades instead of flicker-swapping.
+- Right side accepts arbitrary action content via a slot/snippet — a "Start analysis" pill, a status badge ("API READY"), a "Logout" button, etc., all to the *left* of the dark-mode toggle.
+
+### Stage / Pipeline Panel Pattern
+
+When the demo shows a multi-stage physical process (water-treatment stages, drilling-rig subsystems, manufacturing line cells), each stage gets a dedicated `BackgroundCard` laid out as a column of: **stage code + status dot + status badge → schematic SVG → mono stage name → tabular readouts → optional history strip**. The pattern is from `newton-swat-demo`'s `stage-card.svelte` (P1–P6 of the water-treatment plant) and transfers wholesale to any per-subsystem dashboard.
+
+```svelte
+<BackgroundCard class="flex flex-col gap-3 p-4">
+  <header class="flex items-center justify-between">
+    <div class="flex items-center gap-2">
+      <span class="text-muted-foreground font-mono text-sm">{stageId}</span>
+      <span class="size-2 rounded-full {tokens.dot}"></span>      <!-- status dot -->
+    </div>
+    <Badge variant="outline" class="font-mono text-xs {tokens.pill}">{tokens.label}</Badge>
+  </header>
+
+  <StageSchematic stageId={stageId} class={status === 'attack' && 'text-atai-critical/70'} />
+
+  <p class="font-mono text-sm leading-tight">{stageName}</p>
+
+  <dl class="flex flex-col gap-1 text-xs">
+    {#each columns as col}
+      <div class="flex items-baseline justify-between gap-2">
+        <dt class="text-muted-foreground font-mono">{col}</dt>
+        <dd class="font-mono">{fmt(liveRow?.[col])}</dd>
+      </div>
+    {/each}
+  </dl>
+
+  <!-- optional: recent-classifications dot strip mt-auto -->
+</BackgroundCard>
+```
+
+Composition notes:
+- The card padding is the standard `p-4`, but the *internal* gap shrinks to `gap-3` (vs `gap-6` in a generic BackgroundCard) — stage panels are intentionally denser.
+- **Stage code + dot** sit on the left; **status badge** on the right. The dot is `size-2` rounded-full filled with a semantic status token (`bg-atai-good`, `bg-atai-critical`, `bg-atai-warning`, `bg-muted`).
+- **Stage name uses mono** (`font-mono text-sm`) — this is an exception to the "mono only on technical data" rule, justified because stage names ("Raw water intake", "UV dechlorination") read more like equipment IDs than prose.
+- A dedicated `STATUS_TOKEN` map keeps dot color + pill color + label in lockstep so adding a new status (`warmup`, `pending`, `standby`, `unmonitored`, `idle`) is one record, not three.
+
+### Readout Tables (Tabular Sensor Values)
+
+The `<dl>` block inside a stage panel is the canonical "label-value" readout — used wherever you want a tight column of sensor IDs and their current values without a true table's chrome:
+
+```svelte
+<dl class="flex flex-col gap-1 text-xs">
+  <div class="flex items-baseline justify-between gap-2">
+    <dt class="text-muted-foreground font-mono">FIT101</dt>
+    <dd class="font-mono">2.42</dd>
+  </div>
+  …
+</dl>
+```
+
+Conventions:
+- Both `dt` and `dd` are `font-mono`. The label is `text-muted-foreground`; the value is full-strength `text-foreground`.
+- `text-xs` (12px) is the default density. Bump to `text-sm` only when the panel is the entire dashboard.
+- Rows are `flex items-baseline justify-between` so the decimal points roughly stack visually without a true tabular-num font feature.
+- Value formatting (from `stage-card.svelte`):
+
+  ```js
+  function fmt(v) {
+    if (v === undefined || v === null || v === '') return '—';
+    const n = parseFloat(v);
+    if (isNaN(n)) return String(v);
+    if (Math.abs(n) >= 1000) return n.toFixed(0);  // 1450
+    if (Math.abs(n) >= 10)   return n.toFixed(1);  // 521.3
+    return n.toFixed(2);                            //   2.42
+  }
+  ```
+
+  The three-tier rounding keeps the column visually balanced at any scale and gives unknowns a single em-dash glyph instead of "N/A" or "null".
 
 ### Whitespace Philosophy
 - **Data density over decoration**: Panels use every pixel — content areas flex to fill, no decorative whitespace.
