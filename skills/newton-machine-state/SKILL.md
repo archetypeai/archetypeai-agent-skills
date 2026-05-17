@@ -289,6 +289,144 @@ Streaming per window fans out too — transpose the current window to channel-fi
 
 See [references/parallel-subsystem-pattern.md](references/parallel-subsystem-pattern.md) for the full pattern, including browser-side cleanup on tab close.
 
+## Multi-Sensor N-Shot (Single Lens, 4 Variates)
+
+Different from parallel-subsystem (N lenses, one per column subset). Here you have **N sibling channels** all watching the same subsystem during the same incident, and you want to use up to 4 of their primary measurements as the **4 variates of a single lens**. Common in benchmarks where each "channel" is one sensor's `.npy` file rather than one column of a wide CSV — e.g. NASA telemanom, where SMAP-E means 13 separate `.npy` files (E-1 through E-13) sampled during the same electrical incident.
+
+Pattern (reference: [`newton-nasa-jpl-telemanom-demo`](https://github.com/archetypeai/newton-nasa-jpl-telemanom-demo)):
+
+1. **Pick up to 4 sibling channels** (per-docs hard cap on variates). Rank by anomaly coverage or by mutual information against the union label.
+2. **Truncate to the shortest channel** — sibling channels are typically extracted with slightly different lengths. Use min-length as the common timeline.
+3. **Assume row-index alignment** — within a sibling group, anomaly start indices cluster tightly (e.g. SMAP-E channels all flag in rows 5000–5800), strongly suggesting wall-clock alignment. We don't have absolute timestamps to verify, so this is best-effort.
+4. **Build the ground truth as the union of per-sensor anomaly ranges.** A row is "anomaly" if any sibling sensor flagged it. Intersection sounds cleaner but is wrong here — different sensors respond on different timescales (voltage drops first, temperature climbs later), so intersection produces an unrealistically narrow, often-empty GT.
+5. **Send the 4 channels as 4 variates** in one lens — `csv_configs.data_columns: ["c0", "c1", "c2", "c3"]` with each `cN` being one sibling's `c0` (primary measurement).
+
+**When this beats single-channel + mode flags:**
+- Sibling channels diverge during normal operation but synchronize during anomaly (multi-sensor agreement is the signal)
+- The anomaly is observable on multiple sensors with different physical principles
+- You have substantial held-out normal rows for honest precision (>100)
+
+**When it doesn't:**
+- Fewer than 3 truly correlated siblings available (thin KNN library)
+- Sibling channels span multiple unrelated incidents — mixing patterns dilutes the n-shot signal
+- Anomaly covers >50% of the channel (no held-out normal → degenerate precision)
+
+For groups with >4 sibling channels, combine with the parallel-subsystem pattern: run 3 lenses with disjoint 4-channel subsets and merge their predictions (majority vote or union).
+
+## Honest Held-out Evaluation
+
+When you have labeled ground truth and want to measure precision/recall/F1 — not just produce classifications — the n-shot pattern requires careful splitting so the model never sees the rows it's evaluated on.
+
+### Half-and-half split per anomaly region
+
+For each labeled anomaly range `[a, b]`:
+- **First half** `[a, mid)` → feeds the anomaly focus CSV
+- **Second half** `[mid, b)` → held out for evaluation
+
+Newton sees the first halves as anomaly examples; the second halves are unseen. Precision/recall on the second halves is the honest number. (Don't hold out whole anomaly regions unless the channel has multiple — you'd lose all training signal for that anomaly *type*.)
+
+### Held-out must exclude *every* row Newton was shown
+
+Common bug: defining `held_out = test_rows MINUS training_ranges` (where training_ranges = first halves of anomalies). This treats the **normal focus source rows** as if they were held out. They're not — Newton saw them. The correct definition:
+
+```
+seen_rows       = normal_source_ranges ∪ anomaly_training_ranges
+held_out_rows   = test_rows ∖ seen_rows
+```
+
+Then `held_out_anomaly_rows = held_out_rows ∩ all_GT_ranges` and `held_out_normal_rows = held_out_rows ∖ all_GT_ranges`. F1 is computed only on `held_out_rows`.
+
+### Multi-segment normal focus
+
+Don't sample normal only from pre-first-anomaly. For long channels with multiple anomaly regions, also sample the **first half of each inter-anomaly gap** and the **first half of the post-last-anomaly tail**. The second halves of those gaps stay in held-out, so evaluation remains honest.
+
+The reason: a channel may have 5,000 rows of normal data, but if your normal focus is only the first 1,000 rows, the encoder learns "normal = early-mission pattern." Later mission phases look different and get false-alarmed even though they're normal. Multi-segment coverage attacks this directly.
+
+```python
+def multisegment_normal_ranges(seqs, n_rows, fraction=0.5, min_segment=128):
+    ranges = []
+    sorted_seqs = sorted(seqs)
+    # Pre-anomaly
+    if sorted_seqs[0][0] >= min_segment:
+        ranges.append([0, sorted_seqs[0][0]])
+    # First halves of inter-anomaly gaps
+    for i in range(len(sorted_seqs) - 1):
+        gap_start, gap_end = sorted_seqs[i][1], sorted_seqs[i + 1][0]
+        if gap_end - gap_start >= min_segment:
+            ranges.append([gap_start, gap_start + int((gap_end - gap_start) * fraction)])
+    # First half of post-last-anomaly tail
+    last_end = sorted_seqs[-1][1]
+    if n_rows - last_end >= min_segment:
+        ranges.append([last_end, last_end + int((n_rows - last_end) * fraction)])
+    return ranges
+```
+
+## Adaptive Window Sizing
+
+**The window must fit inside the smallest n-shot training chunk.** If `window > min(training_chunk_lengths)`, no embedding in the focus library is "pure anomaly" — every window straddles the chunk boundary into surrounding normal/noise. The result is catastrophic: Newton can't distinguish the classes (we've seen F1=0% on channels where this constraint was violated).
+
+Heuristic:
+```python
+def adaptive_window(seqs, training_ranges, total_rows):
+    min_chunk = min(b - a for a, b in training_ranges)
+    # Largest power-of-2 that fits inside the smallest training chunk
+    for w in [512, 256, 128, 64, 32]:
+        if w <= min_chunk:
+            window = w
+            break
+    # step = window / 8 for 8x overlap; bump step (halve overlap) if predictions
+    # would exceed ~500 (runtime cap, since each prediction is 0.5-1s on staging)
+    step = max(1, window // 8)
+    while ((total_rows - window) // step + 1) > 500 and step < window // 2:
+        step *= 2
+    return window, step
+```
+
+**Why step = window / 8.** Consecutive windows share `window − step` rows. At step = window/8 (87.5% overlap), the embeddings are *meaningfully different* but you get 8 predictions covering each row. Step = 1 (max overlap) costs 8× more inference for no real resolution gain — adjacent windows produce nearly identical embeddings.
+
+## MI-Picked Variates with Constant-Column Filter
+
+When using telemetry + N mode flags as variates (single-channel mode), pick mode flags by **mutual information between flag state and the anomaly label**, computed only over rows Newton will see (no held-out leakage).
+
+### Required filter: drop columns constant in *both* focus files
+
+A column can have nonzero MI by accident — the y-label and x-value happen to covary across the train/normal boundary — even though within each focus file it's constant. Such a column appears as a dead axis in the KNN embedding (no information to discriminate inside either class). Preflight's `constant_columns` check flags these, and you'll lose 10–20pp F1 if you leave them in.
+
+```python
+VAR_FLOOR = 1e-6
+def is_dead_in_focus(col_values, normal_mask, training_mask):
+    v_n = col_values[normal_mask].var()
+    v_t = col_values[training_mask].var()
+    return v_n < VAR_FLOOR and v_t < VAR_FLOOR
+```
+
+**Keep informative asymmetries.** If a column is constant in *one* focus class but varies in the *other*, KEEP it — that asymmetry is exactly what KNN exploits ("this flag fires only during anomaly"). Filtering on "constant in either" is too aggressive and drops your most predictive features.
+
+## Staging Gotchas
+
+### `omega_embeddings_01` may not be available on staging
+
+The production-default model version `OmegaEncoder::omega_embeddings_01` is not always exposed on `api.stage.u1.archetypeai.app`. Symptom: lens registration and session creation both succeed, the session reaches `LensSessionStatus.SESSION_STATUS_RUNNING`, but every inference emits:
+
+```json
+{"type": "inference.error",
+ "event_data": {"error_messages": ["query_id: session-modify-qry-XXX failed!"]}}
+```
+
+The `session-modify-qry-` prefix is Newton's internal naming for *all* lens queries — it does NOT mean a `session.modify` event is broken. Switch the `model_version` to `OmegaEncoder::omega_embeddings_1_4` and it works.
+
+### KNN ranking is non-deterministic under load
+
+Same focus files, same query CSV, same lens config — F1 fluctuates ±10–15pp between runs on staging. Tie-breaking in the KNN library appears load-dependent. Report median over 3+ runs, or move to prod for stable metrics.
+
+### SSE consumer drops mid-stream
+
+The streaming response from `GET /lens/sessions/consumer/{session_id}` sometimes closes before all `inference.result` events are delivered (`httpx.RemoteProtocolError: peer closed connection`). Wrap the consumer loop in `try/except (httpx.RemoteProtocolError, ReadError, ConnectError, ReadTimeout)` and return whatever predictions arrived as a *partial* result — better than losing the full run on a network blip.
+
+### Validate focus CSVs with `omega-1-4-preflight` before paying for inference
+
+The [omega-1-4-preflight](https://github.com/archetypeai/omega-1-4-preflight) static checks (schema / timestamp / constant_columns / feature_scale / n-shot-support / schema_match / class_balance / window-vs-sampling) run in milliseconds against your focus CSVs, no API call. Run them before every classify if you're iterating on focus selection — catches most "0 predictions" mysteries before you spend 90s on a doomed Newton run.
+
 ## Key Parameters
 
 | Parameter | Default | Description |
