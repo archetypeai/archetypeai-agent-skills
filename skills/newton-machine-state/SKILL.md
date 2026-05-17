@@ -51,6 +51,8 @@ Create one CSV per class with labeled sensor data. Each CSV should have:
 - A representative sample of that class (50-200 rows recommended)
 - No header row mismatches between focus files and query data
 
+**Normalize before uploading if your sensors aren't already on comparable scales.** The deployed encoder runs with `normalize_input=False` and the flag is not currently exposed in the Lens config — so what you upload is what the encoder sees. If focus files and query data come from different operating conditions with different bulk amplitudes (e.g. noisy vs clean recordings, low-load vs high-load runs), the encoder reads the amplitude offset as a class signal and cross-condition accuracy collapses even when within-condition is ≥90%. Either z-score each CSV per-channel before upload, or fit a global `StandardScaler` on your focus pool and apply it to both focus and query data. See the matching [Input normalization](../newton-machine-state-batch/SKILL.md#input-normalization) section in the batch skill for the longer discussion; the local-only `normalize_input` flag and the two-option framing are documented in [omega-local/SKILL.md](../omega-local/SKILL.md#normalization-choices).
+
 **Example: HRV Stress Detection**
 ```
 # focus_relaxed.csv

@@ -58,6 +58,24 @@ For new projects pick `omega_1_4_base` — it removes the "exactly 9 sensors" co
 - N-shot files must produce at least `n_neighbors` windows: `(rows − window_size) / step_size ≥ n_neighbors`.
 - For drilling specifically, the `omega_1_3_surface` n-shot labels should come from ACTC rig mode codes, not sensor heuristics — control-system ground truth is more reliable than thresholded readings.
 
+### Input normalization
+
+The deployed pipeline runs with `normalize_input=False` and the flag is **not currently exposed in `reader_config`** — so whatever pre-encoder normalization you want has to happen *before* you upload. The encoder sees the raw values from your CSV.
+
+When this matters:
+
+- **Same operating condition for shots and inference** → ignore this section; absolute amplitudes are comparable already, and within-distribution accuracy stays high.
+- **Different conditions** (clean vs factory-noise recordings, different loads/speeds, different equipment instances) → the encoder will read bulk-amplitude differences as class signal. Symptom: within-distribution accuracy ≥90% but cross-condition collapses to ~majority-class predictions; "normal" files under high-noise conditions get classified as the loudest-sounding fault class.
+
+What to do about it:
+
+- **Z-score per file before upload.** Compute per-channel mean and std on each CSV, write the standardized values back. Removes the per-file amplitude offset cleanly; cheapest fix; usually enough.
+- **Or: fit a global `StandardScaler` on the n-shot pool, apply to all inputs.** Preserves cross-file amplitude relationships. The right call if the bulk amplitude *is* part of your class signal (e.g. high-energy vs low-energy operating regimes).
+
+This is the cloud-side stand-in for omega-local's "Option B" pattern documented in [omega-local/SKILL.md](../omega-local/SKILL.md) under *Normalization Choices*. "Option A" (per-window instance normalization inside the encoder) is the local-only path; on the cloud you get whatever the deployed encoder was trained with, which currently is `normalize_input=False`.
+
+If you're not sure whether amplitude variation matters for your dataset, run the `feature_scale` check in [omega-1-4-preflight](https://github.com/archetypeai/omega-1-4-preflight) on your shot files — a >3-decade range gap is a strong "z-score before uploading" signal.
+
 ### Example: process-plant classification with `omega_1_4_base` (52 variables)
 
 Classifying a chemical-plant process dataset (the public [Tennessee Eastman Process](https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/6C3JR1) benchmark — 52 process variables, 21 fault types) into binary `normal` vs `fault` from two n-shot example files. This is the canonical `omega_1_4_base` shape — the config below is what you should clone for any new project, regardless of domain.
