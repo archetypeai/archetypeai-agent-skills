@@ -76,6 +76,71 @@ This is the cloud-side stand-in for omega-local's "Option B" pattern documented 
 
 If you're not sure whether amplitude variation matters for your dataset, run the `feature_scale` check in [omega-1-4-preflight](https://github.com/archetypeai/omega-1-4-preflight) on your shot files — a >3-decade range gap is a strong "z-score before uploading" signal.
 
+### Step size at high sample rates
+
+`step_size: 1` is the canonical default in the examples below, but it's not always the right one. The number of windows the pipeline produces per file is `(rows − window_size) / step_size + 1`, and the per-window inference cost is roughly constant. For a low-rate dataset (TEP at 1 Hz, drilling at 0.1 Hz) `step_size: 1` is cheap and gives you maximum temporal resolution. For high-rate vibration / accelerometer data it isn't.
+
+Empirical example: 4-channel 100 kHz vibration, 5-second clips (500,000 rows), `window_size: 1024`.
+
+| `step_size` | Windows per file | Compute |
+|---|---|---|
+| 1 | 498,977 | hours-of-GPU per file |
+| 64 | 7,797 | minutes per file |
+| **1024 (= window_size)** | **488 (non-overlapping)** | **~1 s per file** |
+
+Per-file accuracy is statistically identical across all three — the discriminative signal lives in the window content, not in the sliding stride. **For accuracy-evaluation runs at sample rates ≥10 kHz, default to `step_size == window_size`** (non-overlapping windows, ~1 prediction per `window_size` rows of raw signal). Reserve `step_size: 1` for cases where you actually need per-row temporal resolution (e.g. drift detection or onset localization).
+
+If you submit a step-1 job at 100 kHz and the events log says "Batch N for foo.csv: 240,000 success" and keeps climbing, you've made this mistake — cancel via `POST /v0.5/batch/jobs/{id}/cancel` and resubmit.
+
+### Within-condition pilot vs cross-condition reality
+
+The single most common pattern when promoting a config from preflight pilot to production: **pilot accuracy systematically over-estimates cross-condition accuracy by 20–45 percentage points** on time-series data with frozen encoder embeddings. The pilot tests "shot file vs held-out slice of the same shot file" — same operating condition, same equipment instance, often same recording session. Cross-condition inference is a strictly harder task.
+
+Observed empirically:
+
+| Dataset | Pilot accuracy | Cross-condition accuracy | Gap |
+|---|---|---|---|
+| TEP (per omega-1-4-preflight README) | 0.784 | 0.506–0.537 | ~25 pp |
+| SSCC chain-conveyor fault (4-channel 100 kHz vibration) | 0.963 | 0.527 | 44 pp |
+
+This isn't a tuning failure — it's the cost of using KNN over a frozen embedding space whose class regions overlap when operating conditions shift. The gap will not close by reweighting KNN, switching metrics, or expanding the n-shot library by 2–3×; we've observed multiple distinct configurations clamping at the same cross-condition number once you've moved beyond one or two operating regimes. To break past this requires changing what the encoder *sees* — fine-tuning, a different encoder, or pre-engineered features (spectrograms / wavelet bands / cyclostationary indicators) — not how the classifier votes.
+
+**Recommended evaluation protocol:**
+
+1. Run omega-1-4-preflight `--pilot` against your shot files. PASS verdict ≠ done.
+2. Before deploying, evaluate on **at least one** inference file from an operating condition that is *not* represented in your shot library. If the per-class accuracy survives that, you have evidence beyond within-distribution.
+3. If pilot says 0.95 and your one cross-condition file scores 0.30, that's the diagnosis — you're stuck inside one operating regime and the n-shot library doesn't span the production envelope yet.
+
+### One-vs-rest (5 binary classifiers) for per-class recall
+
+When the multi-class accuracy hits a ceiling but you need high recall on a specific class (e.g. "always catch normal", or "never miss screwdrop"), submit one binary `machine-state-classification` job per class instead of a single multi-class job:
+
+- **Positives**: all n-shot files for class C, metadata `{"class": C}`.
+- **Negatives**: ~2 shots per class from every other class, metadata `{"class": f"not_{C}"}`. Roughly balance positives to negatives.
+- **Per-class config**: pick the metric / weights / library composition that works best for *that* class — they don't have to match across classifiers.
+
+This is genuinely useful when class regions in the embedding space are mutually non-overlapping for some pairs (dry / lean) but overlapping for others (loose / screwdrop / noisy-normal). The per-class binaries can hit ≥90% recall on the well-separated classes (file-level recall of 1.000 for SSCC `dry` and `lean` in the same setup that hit 0.71 multi-class).
+
+**Caveat: argmax combining is the weak link.** When several binaries fire simultaneously on the same input (because their positive regions overlap), `argmax(p_C)` across classifiers doesn't disambiguate cleanly. In the SSCC case, the `normal` binary scored ≥0.75 on every normal file (perfect threshold-rated recall) but lost the argmax to the loose/screwdrop binaries that scored even higher on the same files. Decision-rule fixes (margin-based voting, confidence calibration, learned combiners) are not currently exposed by the platform — if the failure mode bites, either consume the binary outputs yourself or fall back to the multi-class job.
+
+### Anomaly-detection deployment pattern
+
+For production monitoring, the right shape is often **not** multi-class — it's a single binary classifier that distinguishes the "normal" operating state from "anything else." Operators usually need to know *that* a fault occurred (so they can dispatch maintenance); naming the specific failure mode is downstream.
+
+The recipe:
+
+- **Positives**: 10–20 shots labelled `normal`, spanning the operating conditions you actually run in production (different speeds / loads / noise levels).
+- **Negatives**: 5–10 shots per known fault class, all labelled `anomaly`.
+- **Threshold the output**: `p(normal) < 0.5` ⇒ anomaly. Tighten the threshold (0.3, 0.2) for higher recall at the cost of false positives.
+
+The deployment is simpler, the n-shot library is smaller, and you can extend it incrementally as new fault modes show up in the field — just add more `anomaly` shots, no schema change. Expect high recall on `normal` and the failure mode of *missing* anomalies whose embeddings sit close to the normal region (in SSCC that's `loose` and `screwdrop` under factory noise — their embeddings genuinely look "normal-ish" to omega_1_4_base).
+
+### Class-imbalanced n-shot libraries — what to know
+
+KNN votes are sensitive to library composition. If you ship 10 shots for `normal` and 5 each for the four fault classes, the decision boundary slides toward `normal` — every borderline window in the embedding space is more likely to find a `normal` neighbor among its top 5 nearest. We observed this directly on SSCC: imbalancing the library normal-heavy fixed the diagnosed `normal-under-noise` failure mode (recall jumped from 0.13 → 0.66 on the two affected files) but cost 12–14 pp on the loose and screwdrop classes that paid the symmetric tax.
+
+Use this deliberately when it serves your deployment (e.g. an anomaly detector wants the decision boundary biased toward `normal`); use balanced libraries when overall classification accuracy is what you care about. `weights="distance"` partially de-biases imbalance — closer neighbours get larger votes — but doesn't eliminate it.
+
 ### Example: process-plant classification with `omega_1_4_base` (52 variables)
 
 Classifying a chemical-plant process dataset (the public [Tennessee Eastman Process](https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/6C3JR1) benchmark — 52 process variables, 21 fault types) into binary `normal` vs `fault` from two n-shot example files. This is the canonical `omega_1_4_base` shape — the config below is what you should clone for any new project, regardless of domain.
@@ -260,6 +325,8 @@ Fine-tuning via `POST /v0.5/internal/experiment/runner/jobs` is not yet availabl
 - **Poll status periodically** — jobs can run for minutes to hours depending on data size. Lower `flush_every_n_iteration` if you want mid-job progress visibility.
 - **Check events on failure** — the `/events` endpoint provides detailed error messages including row-level context.
 - **Watch n-shot window math** — `(rows − window_size) / step_size ≥ n_neighbors`. Easy to under-shoot when bumping `window_size` mid-experiment.
+- **For sample rates ≥10 kHz, default to `step_size = window_size`** — non-overlapping windows give the same per-file accuracy at ~1000× less compute. Reserve `step_size: 1` for cases that need per-row temporal resolution. See *Step size at high sample rates*.
+- **Always do at least one cross-condition spot-check before promoting** — pilot accuracy systematically over-estimates cross-condition accuracy by 20–45 pp on time-series data with frozen embeddings. See *Within-condition pilot vs cross-condition reality*.
 
 ## Example Code
 
